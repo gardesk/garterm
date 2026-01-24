@@ -76,11 +76,15 @@ impl Cursor {
     }
 
     /// Restore cursor state (DECRC)
+    ///
+    /// Important: The saved state is preserved (not consumed) so multiple
+    /// restores return to the same position. This matches xterm behavior
+    /// where shells rely on being able to restore multiple times.
     pub fn restore(&mut self) -> Option<(CellAttrs, CellColor, CellColor, bool, bool)> {
-        self.saved.take().map(|s| {
+        self.saved.as_ref().map(|s| {
             self.row = s.row;
             self.col = s.col;
-            (s.attrs, s.fg, s.bg, s.origin_mode, s.autowrap)
+            (s.attrs.clone(), s.fg, s.bg, s.origin_mode, s.autowrap)
         })
     }
 
