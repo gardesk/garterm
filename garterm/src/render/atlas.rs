@@ -49,7 +49,7 @@ impl GlyphAtlas {
             cursor_y: 1,
             row_height: 0,
             cache: HashMap::new(),
-            dirty: false,
+            dirty: true, // Mark dirty so initial zeros get uploaded to GPU
         }
     }
 
