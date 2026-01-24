@@ -879,10 +879,34 @@ impl vte::Perform for Performer<'_> {
             ('h', [b'?']) => {
                 for param in params.iter() {
                     if let Some(&mode) = param.first() {
-                        // Switch to alt screen only if not already on alt screen
-                        // This prevents double-entry from corrupting the primary buffer
-                        if (mode == 1049 || mode == 47 || mode == 1047) && !self.term.modes.alt_screen {
-                            self.term.switch_to_alt_screen();
+                        match mode {
+                            // Mode 1049: Save cursor + alternate screen
+                            1049 if !self.term.modes.alt_screen => {
+                                // Save cursor before switching (per xterm spec)
+                                self.term.cursor.save(
+                                    self.term.attrs,
+                                    self.term.fg,
+                                    self.term.bg,
+                                    self.term.modes.origin,
+                                    self.term.modes.autowrap,
+                                );
+                                self.term.switch_to_alt_screen();
+                            }
+                            // Mode 47/1047: Alternate screen only (no cursor save)
+                            47 | 1047 if !self.term.modes.alt_screen => {
+                                self.term.switch_to_alt_screen();
+                            }
+                            // Mode 1048: Save cursor only (no screen switch)
+                            1048 => {
+                                self.term.cursor.save(
+                                    self.term.attrs,
+                                    self.term.fg,
+                                    self.term.bg,
+                                    self.term.modes.origin,
+                                    self.term.modes.autowrap,
+                                );
+                            }
+                            _ => {}
                         }
                         self.term.modes.set_dec_mode(mode, true);
                     }
@@ -891,10 +915,34 @@ impl vte::Perform for Performer<'_> {
             ('l', [b'?']) => {
                 for param in params.iter() {
                     if let Some(&mode) = param.first() {
-                        // Switch to primary screen only if currently on alt screen
-                        // This prevents double-exit issues
-                        if (mode == 1049 || mode == 47 || mode == 1047) && self.term.modes.alt_screen {
-                            self.term.switch_to_primary_screen();
+                        match mode {
+                            // Mode 1049: Alternate screen + restore cursor
+                            1049 if self.term.modes.alt_screen => {
+                                self.term.switch_to_primary_screen();
+                                // Restore cursor after switching (per xterm spec)
+                                if let Some((attrs, fg, bg, origin, autowrap)) = self.term.cursor.restore() {
+                                    self.term.attrs = attrs;
+                                    self.term.fg = fg;
+                                    self.term.bg = bg;
+                                    self.term.modes.origin = origin;
+                                    self.term.modes.autowrap = autowrap;
+                                }
+                            }
+                            // Mode 47/1047: Alternate screen only (no cursor restore)
+                            47 | 1047 if self.term.modes.alt_screen => {
+                                self.term.switch_to_primary_screen();
+                            }
+                            // Mode 1048: Restore cursor only (no screen switch)
+                            1048 => {
+                                if let Some((attrs, fg, bg, origin, autowrap)) = self.term.cursor.restore() {
+                                    self.term.attrs = attrs;
+                                    self.term.fg = fg;
+                                    self.term.bg = bg;
+                                    self.term.modes.origin = origin;
+                                    self.term.modes.autowrap = autowrap;
+                                }
+                            }
+                            _ => {}
                         }
                         self.term.modes.set_dec_mode(mode, false);
                     }
