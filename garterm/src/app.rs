@@ -39,9 +39,9 @@ impl App {
         let wm_delete_window = conn.intern_atom("WM_DELETE_WINDOW", false)?;
 
         // Calculate initial window size
-        let font_size = config.font_size;
-        let cols = 80;
-        let rows = 24;
+        let font_size = config.font.size;
+        let cols = config.window.columns;
+        let rows = config.window.rows;
 
         // Estimate cell size (will be refined after font loading)
         let cell_w = (font_size * 0.6) as u32;
@@ -106,9 +106,9 @@ impl App {
             pixel_height: actual_height as u16,
         };
         let pty = Pty::spawn(
-            &config.shell,
+            &config.general.shell,
             pty_size,
-            config.working_directory.as_deref(),
+            config.general.working_directory.as_deref(),
         )?;
 
         // Set up signal handler
@@ -129,7 +129,7 @@ impl App {
             selection: Selection::new(),
             last_click: std::time::Instant::now(),
             click_count: 0,
-            vsync: config.vsync,
+            vsync: config.general.vsync,
         })
     }
 

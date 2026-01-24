@@ -19,6 +19,10 @@ pub use config::Config;
 #[command(about = "GPU-accelerated terminal emulator for gardesk")]
 #[command(version)]
 struct Cli {
+    /// Path to config file (default: ~/.config/garterm/config.toml)
+    #[arg(short, long)]
+    config: Option<String>,
+
     /// Command to execute instead of shell
     #[arg(short = 'e', long)]
     command: Option<String>,
@@ -31,9 +35,17 @@ struct Cli {
     #[arg(long)]
     title: Option<String>,
 
+    /// Font size in points
+    #[arg(long)]
+    font_size: Option<f32>,
+
     /// Use VSync-based rendering (may not work on Asahi Linux)
     #[arg(long)]
     vsync: bool,
+
+    /// Print loaded configuration and exit
+    #[arg(long)]
+    print_config: bool,
 }
 
 fn main() -> Result<()> {
@@ -50,23 +62,40 @@ fn main() -> Result<()> {
 
     info!("garterm starting");
 
-    // Build configuration from CLI args
-    let shell = cli
-        .command
-        .or_else(|| std::env::var("SHELL").ok())
-        .unwrap_or_else(|| "/bin/sh".to_string());
+    // Load configuration from file or defaults
+    let mut config = if let Some(config_path) = &cli.config {
+        match Config::load_from_file(std::path::Path::new(config_path)) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Error loading config: {}", e);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        Config::load()
+    };
 
-    let cwd = cli
-        .working_directory
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::current_dir().ok());
+    // Apply CLI overrides
+    if let Some(cmd) = cli.command {
+        config = config.with_shell(cmd);
+    }
+    if let Some(cwd) = cli.working_directory {
+        config = config.with_working_directory(Some(cwd.into()));
+    }
+    if let Some(size) = cli.font_size {
+        config = config.with_font_size(size);
+    }
+    if cli.vsync {
+        config = config.with_vsync(true);
+    }
 
-    let config = Config::new()
-        .with_shell(shell)
-        .with_working_directory(cwd)
-        .with_vsync(cli.vsync);
+    // Print config and exit if requested
+    if cli.print_config {
+        println!("{}", toml::to_string_pretty(&config)?);
+        return Ok(());
+    }
 
-    if config.vsync {
+    if config.general.vsync {
         info!("VSync mode enabled (dirty-flag rendering)");
     } else {
         info!("Continuous rendering mode (60fps timer-based)");

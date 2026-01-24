@@ -1,0 +1,198 @@
+# garterm configuration
+# Place this file at ~/.config/garterm/config.toml
+#
+# All options shown with their default values.
+# Uncomment and modify as needed.
+
+[general]
+# Shell to execute (default: $SHELL or /bin/sh)
+# shell = "/bin/zsh"
+
+# Arguments to pass to shell
+# shell_args = ["-l"]  # Login shell
+
+# Working directory (default: inherit from parent)
+# working_directory = "/home/user"
+
+# Use VSync-based rendering (dirty-flag only)
+# Set to true on systems with proper VSync support for lower CPU usage.
+# Keep false on Asahi Linux where VSync doesn't work.
+vsync = false
+
+# Log level: "error", "warn", "info", "debug", "trace"
+# log_level = "info"
+
+[font]
+# Primary font family (must be monospace)
+family = "monospace"
+
+# Font size in points
+size = 14.0
+
+# Bold font family (default: same as family)
+# bold_family = "monospace"
+
+# Use bold font for bright colors
+bold_is_bright = false
+
+# Enable font ligatures (future feature)
+ligatures = false
+
+# Extra spacing between characters (pixels)
+letter_spacing = 0.0
+
+# Extra spacing between lines (pixels)
+line_spacing = 0.0
+
+[window]
+# Window title (can be overridden by OSC 0/2 escape sequences)
+title = "garterm"
+
+# Window class for WM rules
+class = "garterm"
+
+# Padding inside window (horizontal, vertical) in pixels
+padding = [0, 0]
+
+# Initial window size in columns x rows
+columns = 80
+rows = 24
+
+# Window opacity (0.0 - 1.0, requires compositor)
+opacity = 1.0
+
+# Start in fullscreen mode
+fullscreen = false
+
+[terminal]
+# Maximum scrollback lines
+scrollback_lines = 10000
+
+# Lines to scroll per mouse wheel tick
+scroll_lines = 3
+
+# Enable bracketed paste mode
+bracketed_paste = true
+
+# Allow terminal applications to write to clipboard (OSC 52)
+clipboard_write = true
+
+# Allow terminal applications to read clipboard (OSC 52)
+# SECURITY: Disabled by default - enables clipboard exfiltration
+clipboard_read = false
+
+# Close pane when shell exits
+close_on_exit = true
+
+# TERM environment variable
+term = "xterm-256color"
+
+[colors]
+# Use a preset theme. Available presets:
+#   - tokyo-night (default)
+#   - catppuccin-mocha
+#   - gruvbox-dark
+#   - dracula
+#   - nord
+#   - solarized-dark
+#   - one-dark
+preset = "tokyo-night"
+
+# Or define custom colors (override preset):
+# foreground = "#c0caf5"
+# background = "#1a1b26"
+# cursor = "#c0caf5"
+# cursor_text = "#1a1b26"
+# selection = "#33467c"
+# selection_text = "#c0caf5"
+#
+# # Standard ANSI colors (0-7)
+# black = "#15161e"
+# red = "#f7768e"
+# green = "#9ece6a"
+# yellow = "#e0af68"
+# blue = "#7aa2f7"
+# magenta = "#bb9af7"
+# cyan = "#7dcfff"
+# white = "#a9b1d6"
+#
+# # Bright ANSI colors (8-15)
+# bright_black = "#414868"
+# bright_red = "#f7768e"
+# bright_green = "#9ece6a"
+# bright_yellow = "#e0af68"
+# bright_blue = "#7aa2f7"
+# bright_magenta = "#bb9af7"
+# bright_cyan = "#7dcfff"
+# bright_white = "#c0caf5"
+
+[mouse]
+# Copy to PRIMARY selection when selecting text
+copy_on_select = true
+
+# Paste from PRIMARY on middle click
+middle_click_paste = true
+
+# Right click action: "paste", "context_menu", "none"
+right_click = "paste"
+
+# Additional characters considered part of a word for double-click selection
+word_chars = "-_"
+
+# Enable URL detection and click-to-open
+url_detection = true
+
+# Modifier required for URL clicks (e.g., "ctrl", "shift", "alt")
+url_modifier = "ctrl"
+
+[bell]
+# Enable visual bell (flash screen)
+visual = true
+
+# Visual bell duration in milliseconds
+visual_duration_ms = 100
+
+# Enable audio bell
+audio = false
+
+# Command to play audio bell
+# audio_command = "paplay /usr/share/sounds/freedesktop/stereo/bell.oga"
+
+[keybinds]
+# Keybindings in format: "modifiers+key" = "action"
+#
+# Modifiers: ctrl, alt, shift, super
+# Keys: a-z, 0-9, Return, Tab, Escape, Up, Down, Left, Right,
+#       Page_Up, Page_Down, Home, End, plus, minus, equal, etc.
+#
+# Available actions:
+#   Clipboard: copy, paste, paste_primary
+#   Tabs: new_tab, close_tab, next_tab, prev_tab, tab_N (N=1-9)
+#   Panes: split_horizontal, split_vertical, close_pane,
+#          focus_up, focus_down, focus_left, focus_right
+#   Scrollback: scroll_up, scroll_down, scroll_page_up, scroll_page_down,
+#               scroll_to_top, scroll_to_bottom
+#   Font: increase_font_size, decrease_font_size, reset_font_size
+#   Misc: reload_config, toggle_fullscreen, reset_terminal, clear_scrollback
+#   Disable: none (disables a default keybind)
+#
+# Default keybindings (uncomment to override):
+# "ctrl+shift+c" = "copy"
+# "ctrl+shift+v" = "paste"
+# "ctrl+shift+t" = "new_tab"
+# "ctrl+shift+w" = "close_pane"
+# "ctrl+shift+h" = "split_horizontal"
+# "ctrl+shift+e" = "split_vertical"
+# "ctrl+shift+Up" = "focus_up"
+# "ctrl+shift+Down" = "focus_down"
+# "ctrl+shift+Left" = "focus_left"
+# "ctrl+shift+Right" = "focus_right"
+# "shift+Page_Up" = "scroll_page_up"
+# "shift+Page_Down" = "scroll_page_down"
+# "ctrl+shift+Home" = "scroll_to_top"
+# "ctrl+shift+End" = "scroll_to_bottom"
+# "ctrl+shift+equal" = "increase_font_size"
+# "ctrl+shift+minus" = "decrease_font_size"
+# "ctrl+shift+0" = "reset_font_size"
+# "ctrl+shift+f" = "search_forward"
+# "ctrl+shift+r" = "reload_config"
