@@ -31,7 +31,7 @@ pub enum ClipboardEvent {
 }
 
 use std::collections::{HashMap, VecDeque};
-use tracing::trace;
+use tracing::{debug, trace};
 
 /// Terminal state machine
 pub struct Terminal {
@@ -379,6 +379,9 @@ impl Terminal {
 
     /// Set cursor position (1-indexed input, handles origin mode)
     fn set_cursor_pos(&mut self, row: usize, col: usize) {
+        let old_row = self.cursor.row;
+        let old_col = self.cursor.col;
+
         let row = row.saturating_sub(1);
         let col = col.saturating_sub(1);
 
@@ -390,6 +393,10 @@ impl Terminal {
 
         self.cursor.row = (row + row_offset).min(max_row);
         self.cursor.col = col.min(self.cols - 1);
+
+        debug!("CUP: set pos ({},{}) -> ({},{}) [origin={}, scroll_region={:?}]",
+            old_row, old_col, self.cursor.row, self.cursor.col,
+            self.modes.origin, self.scroll_region);
     }
 
     /// Erase in display
@@ -825,37 +832,74 @@ impl vte::Perform for Performer<'_> {
     }
 
     fn csi_dispatch(&mut self, params: &vte::Params, intermediates: &[u8], ignore: bool, action: char) {
-        trace!("csi: {:?} {:?} {} {:?}", params, intermediates, ignore, action);
+        // Always log CSI sequences at debug level for diagnostics
+        let param_vec: Vec<Vec<u16>> = params.iter().map(|p| p.to_vec()).collect();
+        debug!("CSI dispatch: action={:?} params={:?} intermediates={:?} ignore={}",
+            action, param_vec, intermediates, ignore);
 
         if ignore {
             return;
         }
 
+        // Get parameter with default. Per VT spec, param of 0 is treated as default for most commands.
         let param = |n: usize, default: u16| -> u16 {
             params.iter().nth(n).and_then(|p| p.first().copied()).unwrap_or(default)
         };
+        // For cursor movement commands, 0 means 1 (per ECMA-48/VT spec)
+        let param_nonzero = |n: usize, default: u16| -> u16 {
+            let v = param(n, default);
+            if v == 0 { default } else { v }
+        };
 
         match (action, intermediates) {
-            // Cursor movement
-            ('A', []) => self.term.cursor.move_up(param(0, 1) as usize),
-            ('B', []) => self.term.cursor.move_down(param(0, 1) as usize, self.term.rows - 1),
-            ('C', []) => self.term.cursor.move_right(param(0, 1) as usize, self.term.cols - 1),
-            ('D', []) => self.term.cursor.move_left(param(0, 1) as usize),
+            // Cursor movement - use param_nonzero because 0 means 1 per VT spec
+            ('A', []) => {
+                let n = param_nonzero(0, 1) as usize;
+                let old = self.term.cursor.row;
+                self.term.cursor.move_up(n);
+                debug!("CUU: move up {} from row {} to {}", n, old, self.term.cursor.row);
+            }
+            ('B', []) => {
+                let n = param_nonzero(0, 1) as usize;
+                let old = self.term.cursor.row;
+                self.term.cursor.move_down(n, self.term.rows - 1);
+                debug!("CUD: move down {} from row {} to {}", n, old, self.term.cursor.row);
+            }
+            ('C', []) => {
+                let n = param_nonzero(0, 1) as usize;
+                let old = self.term.cursor.col;
+                self.term.cursor.move_right(n, self.term.cols - 1);
+                debug!("CUF: move right {} from col {} to {}", n, old, self.term.cursor.col);
+            }
+            ('D', []) => {
+                let n = param_nonzero(0, 1) as usize;
+                let old = self.term.cursor.col;
+                self.term.cursor.move_left(n);
+                debug!("CUB: move left {} from col {} to {}", n, old, self.term.cursor.col);
+            }
             ('E', []) => {
-                self.term.cursor.move_down(param(0, 1) as usize, self.term.rows - 1);
+                self.term.cursor.move_down(param_nonzero(0, 1) as usize, self.term.rows - 1);
                 self.term.carriage_return();
             }
             ('F', []) => {
-                self.term.cursor.move_up(param(0, 1) as usize);
+                self.term.cursor.move_up(param_nonzero(0, 1) as usize);
                 self.term.carriage_return();
             }
-            ('G', []) => self.term.cursor.col = (param(0, 1) as usize).saturating_sub(1).min(self.term.cols - 1),
-            ('H', []) | ('f', []) => self.term.set_cursor_pos(param(0, 1) as usize, param(1, 1) as usize),
-            ('d', []) => self.term.cursor.row = (param(0, 1) as usize).saturating_sub(1).min(self.term.rows - 1),
+            ('G', []) => self.term.cursor.col = (param_nonzero(0, 1) as usize).saturating_sub(1).min(self.term.cols - 1),
+            ('H', []) | ('f', []) => self.term.set_cursor_pos(param_nonzero(0, 1) as usize, param_nonzero(1, 1) as usize),
+            ('d', []) => self.term.cursor.row = (param_nonzero(0, 1) as usize).saturating_sub(1).min(self.term.rows - 1),
 
             // Erase
-            ('J', []) => self.term.erase_in_display(param(0, 0)),
-            ('K', []) => self.term.erase_in_line(param(0, 0)),
+            ('J', []) => {
+                let mode = param(0, 0);
+                debug!("ED: erase in display mode {} at ({}, {})", mode, self.term.cursor.row, self.term.cursor.col);
+                self.term.erase_in_display(mode);
+            }
+            ('K', []) => {
+                let mode = param(0, 0);
+                debug!("EL: erase in line mode {} at ({}, {})", mode, self.term.cursor.row, self.term.cursor.col);
+                self.term.erase_in_line(mode);
+            }
 
             // Insert/Delete
             ('@', []) => self.term.insert_blank(param(0, 1) as usize),
@@ -985,14 +1029,23 @@ impl vte::Perform for Performer<'_> {
             }
 
             // Save/restore cursor
-            ('s', []) => self.term.cursor.save(self.term.attrs, self.term.fg, self.term.bg, self.term.modes.origin, self.term.modes.autowrap),
+            ('s', []) => {
+                debug!("SCOSC: save cursor at ({}, {})", self.term.cursor.row, self.term.cursor.col);
+                self.term.cursor.save(self.term.attrs, self.term.fg, self.term.bg, self.term.modes.origin, self.term.modes.autowrap);
+            }
             ('u', []) => {
+                let old_row = self.term.cursor.row;
+                let old_col = self.term.cursor.col;
                 if let Some((attrs, fg, bg, origin, autowrap)) = self.term.cursor.restore() {
                     self.term.attrs = attrs;
                     self.term.fg = fg;
                     self.term.bg = bg;
                     self.term.modes.origin = origin;
                     self.term.modes.autowrap = autowrap;
+                    debug!("SCORC: restore cursor from ({}, {}) to ({}, {})",
+                        old_row, old_col, self.term.cursor.row, self.term.cursor.col);
+                } else {
+                    debug!("SCORC: no saved state, cursor stays at ({}, {})", old_row, old_col);
                 }
             }
 
@@ -1001,6 +1054,7 @@ impl vte::Perform for Performer<'_> {
                 match param(0, 0) {
                     5 => {
                         // Status report - respond "OK"
+                        debug!("DSR 5: responding OK");
                         self.term.queue_response(b"\x1b[0n".to_vec());
                     }
                     6 => {
@@ -1010,6 +1064,8 @@ impl vte::Perform for Performer<'_> {
                             self.term.cursor.row + 1,
                             self.term.cursor.col + 1
                         );
+                        debug!("DSR 6: responding with cursor pos ({}, {}) -> {:?}",
+                            self.term.cursor.row + 1, self.term.cursor.col + 1, response);
                         self.term.queue_response(response.into_bytes());
                     }
                     _ => {}
@@ -1051,7 +1107,9 @@ impl vte::Perform for Performer<'_> {
     }
 
     fn esc_dispatch(&mut self, intermediates: &[u8], ignore: bool, byte: u8) {
-        trace!("esc: {:?} {} 0x{:02x}", intermediates, ignore, byte);
+        // Always log ESC sequences at debug level for diagnostics
+        debug!("ESC dispatch: byte=0x{:02x} ({:?}) intermediates={:?} ignore={}",
+            byte, byte as char, intermediates, ignore);
 
         if ignore {
             return;
@@ -1059,15 +1117,24 @@ impl vte::Perform for Performer<'_> {
 
         match (byte, intermediates) {
             // DECSC - Save cursor
-            (b'7', []) => self.term.cursor.save(self.term.attrs, self.term.fg, self.term.bg, self.term.modes.origin, self.term.modes.autowrap),
+            (b'7', []) => {
+                debug!("DECSC: save cursor at ({}, {})", self.term.cursor.row, self.term.cursor.col);
+                self.term.cursor.save(self.term.attrs, self.term.fg, self.term.bg, self.term.modes.origin, self.term.modes.autowrap);
+            }
             // DECRC - Restore cursor
             (b'8', []) => {
+                let old_row = self.term.cursor.row;
+                let old_col = self.term.cursor.col;
                 if let Some((attrs, fg, bg, origin, autowrap)) = self.term.cursor.restore() {
                     self.term.attrs = attrs;
                     self.term.fg = fg;
                     self.term.bg = bg;
                     self.term.modes.origin = origin;
                     self.term.modes.autowrap = autowrap;
+                    debug!("DECRC: restore cursor from ({}, {}) to ({}, {})",
+                        old_row, old_col, self.term.cursor.row, self.term.cursor.col);
+                } else {
+                    debug!("DECRC: no saved state, cursor stays at ({}, {})", old_row, old_col);
                 }
             }
             // RI - Reverse Index
