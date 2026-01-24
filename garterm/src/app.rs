@@ -46,45 +46,36 @@ impl App {
         let width = cols * cell_w;
         let height = rows * cell_h;
 
-        // Create window
+        // Create window (don't auto-map so we can wait for WM to configure it)
         let window = Window::create(
             conn.clone(),
             WindowConfig::new()
                 .title("garterm")
                 .class("garterm")
                 .size(width, height)
-                .background(0x1a1b26), // Dark background (matching terminal)
+                .background(0x1a1b26) // Dark background (matching terminal)
+                .map_on_create(false),
         )?;
 
         info!("Created window {}x{}", width, height);
 
+        // Map window and wait for WM to assign final size
+        // This avoids the "quarter shading" issue where wgpu surface is created
+        // at requested size but WM immediately resizes to tiled size
+        window.map()?;
+        conn.flush()?;
+
         // Wait for ConfigureNotify to get actual window size from WM
-        // The WM may resize the window after mapping, so we need to wait for that
-        let mut actual_width = width;
-        let mut actual_height = height;
-
-        // Poll for events with a short timeout to catch WM resize
-        use std::time::{Duration, Instant};
-        let start = Instant::now();
-        let timeout = Duration::from_millis(100);
-
-        while start.elapsed() < timeout {
-            conn.flush()?;
-            if let Some(event) = conn.poll_event()? {
-                if let x11rb::protocol::Event::ConfigureNotify(e) = event {
-                    if e.window == window.id() {
-                        actual_width = e.width as u32;
-                        actual_height = e.height as u32;
-                        info!("Got ConfigureNotify: {}x{}", actual_width, actual_height);
-                    }
-                }
+        use x11rb::protocol::Event;
+        let (actual_width, actual_height) = loop {
+            let event = conn.wait_event()?;
+            if let Event::ConfigureNotify(e) = event {
+                break (e.width as u32, e.height as u32);
             }
-            std::thread::sleep(Duration::from_millis(5));
-        }
+            // Continue waiting for ConfigureNotify, ignore other events
+        };
 
-        if actual_width != width || actual_height != height {
-            info!("Window resized by WM to {}x{}", actual_width, actual_height);
-        }
+        info!("Window configured: {}x{}", actual_width, actual_height);
 
         // Create renderer with actual window size
         let renderer = Renderer::new(
@@ -182,6 +173,7 @@ impl App {
                         self.running = false;
                     }
                     Ok(n) => {
+                        tracing::debug!("PTY read {} bytes", n);
                         self.terminal.input(&buf[..n]);
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
@@ -206,10 +198,20 @@ impl App {
                 self.running = false;
             }
 
-            // Render if dirty
-            if self.terminal.take_dirty() {
-                self.renderer.render(&self.terminal)?;
-            }
+            // Render every frame using timer-based 60fps pacing.
+            //
+            // Why continuous rendering is required (not a hack):
+            // - Asahi Linux lacks VBlank interrupt support, so VSync doesn't work
+            // - wgpu doesn't support X11 damage region reporting (GitHub #682)
+            // - Compositors can't detect when wgpu has new content
+            // - A single render after PTY data isn't enough - compositor may miss it
+            // - Other wgpu terminals (alacritty) have the same limitation on Asahi
+            //
+            // The 16ms poll timeout provides timer-based frame pacing at ~60fps.
+            // This is the correct approach for this hardware/driver combination.
+            let _ = self.terminal.take_dirty();
+            self.renderer.render(&self.terminal)?;
+            self.window.connection().flush()?;
         }
 
         info!("garterm exiting");

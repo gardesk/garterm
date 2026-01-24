@@ -299,6 +299,12 @@ impl Renderer {
         self.gpu.queue.submit(std::iter::once(encoder.finish()));
         output.present();
 
+        // Poll device to ensure GPU work is complete
+        self.gpu.device.poll(wgpu::Maintain::Wait);
+
+        // Sync with X11 server to ensure the frame is displayed
+        self.gpu.sync_display();
+
         Ok(())
     }
 

@@ -42,6 +42,20 @@ impl XlibDisplay {
     pub fn default_screen(&self) -> i32 {
         unsafe { (self.xlib.XDefaultScreen)(self.display) }
     }
+
+    /// Flush pending X11 requests to ensure frames are displayed
+    pub fn flush(&self) {
+        unsafe {
+            (self.xlib.XFlush)(self.display);
+        }
+    }
+
+    /// Sync with X server (blocking)
+    pub fn sync(&self) {
+        unsafe {
+            (self.xlib.XSync)(self.display, 0);
+        }
+    }
 }
 
 impl Drop for XlibDisplay {
@@ -100,7 +114,7 @@ pub struct GpuContext {
     pub surface: wgpu::Surface<'static>,
     pub surface_config: wgpu::SurfaceConfiguration,
     // Keep xlib display alive for the lifetime of the surface
-    _xlib_display: XlibDisplay,
+    xlib_display: XlibDisplay,
 }
 
 impl GpuContext {
@@ -115,10 +129,12 @@ impl GpuContext {
         let display = xlib_display.display_ptr();
         let screen = xlib_display.default_screen();
 
+        // Prefer GL over Vulkan for better X11 compositor integration
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN | wgpu::Backends::GL,
+            backends: wgpu::Backends::GL,
             ..Default::default()
         });
+        tracing::info!("Using OpenGL backend for better compositor compatibility");
 
         let handle = XlibWindowHandle::new(window, display, screen);
 
@@ -164,15 +180,24 @@ impl GpuContext {
         };
         tracing::info!("Using alpha mode: {:?}", alpha_mode);
 
+        // Use Mailbox if available for lower latency, fall back to Fifo
+        let present_mode = if surface_caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
+            tracing::info!("Using Mailbox present mode");
+            wgpu::PresentMode::Mailbox
+        } else {
+            tracing::info!("Using Fifo present mode");
+            wgpu::PresentMode::Fifo
+        };
+
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
             width,
             height,
-            present_mode: wgpu::PresentMode::Fifo,
+            present_mode,
             alpha_mode,
             view_formats: vec![],
-            desired_maximum_frame_latency: 2,
+            desired_maximum_frame_latency: 1, // Reduce latency
         };
 
         surface.configure(&device, &surface_config);
@@ -182,7 +207,7 @@ impl GpuContext {
             queue,
             surface,
             surface_config,
-            _xlib_display: xlib_display,
+            xlib_display,
         })
     }
 
@@ -203,5 +228,10 @@ impl GpuContext {
     /// Get current surface dimensions
     pub fn size(&self) -> (u32, u32) {
         (self.surface_config.width, self.surface_config.height)
+    }
+
+    /// Sync with X11 server to ensure frames are displayed
+    pub fn sync_display(&self) {
+        self.xlib_display.sync();
     }
 }
