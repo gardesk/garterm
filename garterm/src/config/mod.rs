@@ -29,6 +29,7 @@
 
 pub mod colors;
 pub mod keybinds;
+pub mod lua;
 
 pub use colors::{Color, ColorPalette};
 pub use keybinds::{Action, Keybind, KeybindSet, Modifiers};
@@ -445,9 +446,7 @@ impl ConfigLoader {
     }
 
     fn try_load_lua(&self) -> Option<Config> {
-        // TODO: Implement Lua loading in lua.rs
-        // For now, return None to fall through to defaults
-        None
+        lua::load_from_lua(&self.lua_path)
     }
 }
 
