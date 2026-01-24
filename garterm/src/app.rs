@@ -147,6 +147,18 @@ impl App {
                 }
             }
 
+            // Flush terminal responses (DA, DSR, etc.) back to PTY
+            for response in self.terminal.take_responses() {
+                self.pty.write_all(&response)?;
+            }
+
+            // Handle bell
+            if self.terminal.take_bell() {
+                // TODO: visual bell or audio bell based on config
+                // For now, just log it
+                tracing::debug!("Bell!");
+            }
+
             // Check for hangup
             if pty_hup && !self.pty.is_alive() {
                 self.running = false;

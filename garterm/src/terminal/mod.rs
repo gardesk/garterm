@@ -8,6 +8,29 @@ pub use cursor::{Cursor, CursorStyle};
 pub use grid::{Grid, Line};
 pub use modes::{MouseEncoding, MouseMode, TerminalModes};
 
+/// Clipboard selection type
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipboardSelection {
+    /// System clipboard
+    Clipboard,
+    /// Primary selection (X11)
+    Primary,
+    /// Both clipboard and primary
+    Both,
+}
+
+/// Clipboard operation requested by the terminal
+#[derive(Debug, Clone)]
+pub enum ClipboardEvent {
+    /// Terminal is requesting clipboard contents
+    Query(ClipboardSelection),
+    /// Terminal wants to set clipboard contents (already base64 decoded)
+    Set(ClipboardSelection, Vec<u8>),
+    /// Terminal wants to clear clipboard
+    Clear(ClipboardSelection),
+}
+
+use std::collections::{HashMap, VecDeque};
 use tracing::trace;
 
 /// Terminal state machine
@@ -32,6 +55,8 @@ pub struct Terminal {
     tabs: Vec<bool>,
     /// Terminal title
     title: String,
+    /// Current working directory (from OSC 7)
+    cwd: Option<String>,
     /// VTE parser
     parser: vte::Parser,
     /// Dimensions
@@ -39,6 +64,18 @@ pub struct Terminal {
     rows: usize,
     /// Dirty flag (needs re-render)
     dirty: bool,
+    /// Response queue (bytes to write back to PTY)
+    responses: VecDeque<Vec<u8>>,
+    /// Bell pending flag
+    bell_pending: bool,
+    /// Hyperlinks storage (id -> uri)
+    hyperlinks: HashMap<u16, String>,
+    /// Next hyperlink ID
+    next_hyperlink_id: u16,
+    /// Current active hyperlink ID (0 = none)
+    current_hyperlink_id: u16,
+    /// Clipboard events pending processing
+    clipboard_events: VecDeque<ClipboardEvent>,
 }
 
 impl Terminal {
@@ -61,10 +98,17 @@ impl Terminal {
             scroll_region: (0, rows - 1),
             tabs,
             title: String::new(),
+            cwd: None,
             parser: vte::Parser::new(),
             cols,
             rows,
             dirty: true,
+            responses: VecDeque::new(),
+            bell_pending: false,
+            hyperlinks: HashMap::new(),
+            next_hyperlink_id: 1,
+            current_hyperlink_id: 0,
+            clipboard_events: VecDeque::new(),
         }
     }
 
@@ -105,6 +149,60 @@ impl Terminal {
     /// Mark terminal as dirty
     pub fn mark_dirty(&mut self) {
         self.dirty = true;
+    }
+
+    /// Take pending responses to write to PTY
+    pub fn take_responses(&mut self) -> impl Iterator<Item = Vec<u8>> + '_ {
+        self.responses.drain(..)
+    }
+
+    /// Check and clear bell pending flag
+    pub fn take_bell(&mut self) -> bool {
+        std::mem::replace(&mut self.bell_pending, false)
+    }
+
+    /// Get current working directory (from OSC 7)
+    pub fn cwd(&self) -> Option<&str> {
+        self.cwd.as_deref()
+    }
+
+    /// Queue a response to send to PTY
+    fn queue_response(&mut self, response: Vec<u8>) {
+        self.responses.push_back(response);
+    }
+
+    /// Get hyperlink URI by ID
+    pub fn hyperlink(&self, id: u16) -> Option<&str> {
+        self.hyperlinks.get(&id).map(String::as_str)
+    }
+
+    /// Register a hyperlink and return its ID
+    fn register_hyperlink(&mut self, uri: String) -> u16 {
+        let id = self.next_hyperlink_id;
+        self.next_hyperlink_id = self.next_hyperlink_id.wrapping_add(1);
+        if self.next_hyperlink_id == 0 {
+            self.next_hyperlink_id = 1; // Skip 0 (means no hyperlink)
+        }
+        self.hyperlinks.insert(id, uri);
+        id
+    }
+
+    /// Take pending clipboard events
+    pub fn take_clipboard_events(&mut self) -> impl Iterator<Item = ClipboardEvent> + '_ {
+        self.clipboard_events.drain(..)
+    }
+
+    /// Send clipboard response (for OSC 52 queries)
+    pub fn clipboard_response(&mut self, selection: ClipboardSelection, data: &[u8]) {
+        use base64::Engine;
+        let sel = match selection {
+            ClipboardSelection::Clipboard => "c",
+            ClipboardSelection::Primary => "p",
+            ClipboardSelection::Both => "s",
+        };
+        let encoded = base64::engine::general_purpose::STANDARD.encode(data);
+        let response = format!("\x1b]52;{};{}\x07", sel, encoded);
+        self.queue_response(response.into_bytes());
     }
 
     /// Resize terminal
@@ -375,8 +473,10 @@ impl Terminal {
 
             match code {
                 0 => {
-                    // Reset all attributes
+                    // Reset all attributes (but preserve hyperlink)
+                    let hyperlink = self.attrs.hyperlink_id;
                     self.attrs = CellAttrs::default();
+                    self.attrs.hyperlink_id = hyperlink;
                     self.fg = CellColor::Default;
                     self.bg = CellColor::Default;
                 }
@@ -466,6 +566,32 @@ impl Terminal {
     }
 }
 
+/// URL decode a percent-encoded string
+fn url_decode(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            // Try to parse two hex digits
+            let hex: String = chars.by_ref().take(2).collect();
+            if hex.len() == 2 {
+                if let Ok(byte) = u8::from_str_radix(&hex, 16) {
+                    result.push(byte as char);
+                    continue;
+                }
+            }
+            // Failed to parse, keep original
+            result.push('%');
+            result.push_str(&hex);
+        } else {
+            result.push(c);
+        }
+    }
+
+    result
+}
+
 /// vte::Perform implementation for Terminal
 struct Performer<'a> {
     term: &'a mut Terminal,
@@ -480,7 +606,7 @@ impl vte::Perform for Performer<'_> {
     fn execute(&mut self, byte: u8) {
         trace!("execute: 0x{:02x}", byte);
         match byte {
-            0x07 => {} // BEL - TODO: handle bell
+            0x07 => self.term.bell_pending = true, // BEL
             0x08 => self.term.backspace(),
             0x09 => self.term.tab(),
             0x0A | 0x0B | 0x0C => self.term.linefeed(),
@@ -519,8 +645,85 @@ impl vte::Perform for Performer<'_> {
             }
             // Set icon name (ignored)
             b"1" => {}
-            // TODO: OSC 7 (CWD), OSC 8 (hyperlinks), OSC 52 (clipboard), etc.
-            _ => {}
+            // OSC 7: Current working directory
+            // Format: file://hostname/path or just /path
+            b"7" => {
+                if params.len() > 1 {
+                    if let Ok(uri) = std::str::from_utf8(params[1]) {
+                        // Parse file:// URI or raw path
+                        let path = if uri.starts_with("file://") {
+                            // Skip file://hostname part and extract path
+                            uri.strip_prefix("file://")
+                                .and_then(|s| s.find('/').map(|i| &s[i..]))
+                                .unwrap_or(uri)
+                        } else {
+                            uri
+                        };
+                        // URL decode the path
+                        self.term.cwd = Some(url_decode(path));
+                        trace!("CWD set to: {:?}", self.term.cwd);
+                    }
+                }
+            }
+            // OSC 8: Hyperlinks
+            // Format: OSC 8 ; params ; uri ST ... OSC 8 ; ; ST
+            b"8" => {
+                if params.len() >= 3 {
+                    // params[1] = params string (e.g., "id=foo")
+                    // params[2] = URI
+                    if let Ok(uri) = std::str::from_utf8(params[2]) {
+                        if uri.is_empty() {
+                            // End hyperlink
+                            self.term.current_hyperlink_id = 0;
+                            self.term.attrs.hyperlink_id = 0;
+                        } else {
+                            // Start hyperlink
+                            let id = self.term.register_hyperlink(uri.to_string());
+                            self.term.current_hyperlink_id = id;
+                            self.term.attrs.hyperlink_id = id;
+                        }
+                    }
+                } else if params.len() == 2 {
+                    // End hyperlink (empty URI case)
+                    self.term.current_hyperlink_id = 0;
+                    self.term.attrs.hyperlink_id = 0;
+                }
+            }
+            // OSC 52: Clipboard
+            // Format: OSC 52 ; Pc ; Pd ST
+            // Pc = clipboard selection (c, p, s, etc)
+            // Pd = base64 data, "?" to query, or "!" to clear
+            b"52" => {
+                if params.len() >= 3 {
+                    let selection = match params[1] {
+                        b"c" => ClipboardSelection::Clipboard,
+                        b"p" => ClipboardSelection::Primary,
+                        b"s" | b"" => ClipboardSelection::Both,
+                        _ => ClipboardSelection::Clipboard,
+                    };
+
+                    match params[2] {
+                        b"?" => {
+                            // Query clipboard
+                            self.term.clipboard_events.push_back(ClipboardEvent::Query(selection));
+                        }
+                        b"!" => {
+                            // Clear clipboard
+                            self.term.clipboard_events.push_back(ClipboardEvent::Clear(selection));
+                        }
+                        data => {
+                            // Set clipboard (base64 encoded)
+                            use base64::Engine;
+                            if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(data) {
+                                self.term.clipboard_events.push_back(ClipboardEvent::Set(selection, decoded));
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {
+                trace!("unhandled OSC: {:?}", params);
+            }
         }
     }
 
@@ -644,9 +847,41 @@ impl vte::Perform for Performer<'_> {
                 }
             }
 
-            // Device status report
+            // Device Status Report (DSR)
             ('n', []) => {
-                // TODO: respond with cursor position, etc.
+                match param(0, 0) {
+                    5 => {
+                        // Status report - respond "OK"
+                        self.term.queue_response(b"\x1b[0n".to_vec());
+                    }
+                    6 => {
+                        // Cursor position report
+                        let response = format!(
+                            "\x1b[{};{}R",
+                            self.term.cursor.row + 1,
+                            self.term.cursor.col + 1
+                        );
+                        self.term.queue_response(response.into_bytes());
+                    }
+                    _ => {}
+                }
+            }
+
+            // Primary Device Attributes (DA1)
+            ('c', []) => {
+                // Respond as VT420 with various capabilities
+                // 64 = VT420, 1 = 132 cols, 2 = printer, 6 = selective erase,
+                // 9 = national replacement charsets, 15 = technical charsets,
+                // 18 = user windows, 21 = horizontal scrolling, 22 = ANSI color
+                self.term.queue_response(b"\x1b[?64;1;2;6;9;15;18;21;22c".to_vec());
+            }
+
+            // Secondary Device Attributes (DA2)
+            ('c', [b'>']) => {
+                // Respond with terminal type (65 = VT520), version, ROM version
+                // Format: CSI > Pp ; Pv ; Pc c
+                // We'll identify as garterm version 0.1.0
+                self.term.queue_response(b"\x1b[>65;100;0c".to_vec());
             }
 
             // Cursor style (DECSCUSR)

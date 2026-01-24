@@ -56,6 +56,9 @@ anyhow = "1"
 # Unicode
 unicode-width = "0.2"
 
+# Encoding
+base64 = "0.22"
+
 # Async
 pollster = "0.4"
 
