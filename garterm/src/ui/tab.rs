@@ -250,4 +250,9 @@ impl Tab {
     pub fn clear_custom_title(&mut self) {
         self.custom_title = None;
     }
+
+    /// Resize the focused pane by adjusting split ratio
+    pub fn resize_focused_pane(&mut self, delta: f32) -> bool {
+        self.layout.resize_pane(self.focused, delta)
+    }
 }

@@ -486,4 +486,14 @@ impl TabManager {
     pub fn active_tab_id(&self) -> TabId {
         self.active_tab
     }
+
+    /// Resize the focused pane by adjusting split ratio
+    /// delta > 0 makes the pane larger, delta < 0 makes it smaller
+    pub fn resize_focused_pane(&mut self, delta: f32) -> bool {
+        if let Some(tab) = self.tabs.get_mut(&self.active_tab) {
+            tab.resize_focused_pane(delta)
+        } else {
+            false
+        }
+    }
 }

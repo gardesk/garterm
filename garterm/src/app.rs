@@ -40,6 +40,13 @@ pub struct App {
     cwd: Option<std::path::PathBuf>,
     /// Lua runtime for scripting (callbacks, sessions)
     lua_runtime: Option<LuaRuntime>,
+    /// EWMH atoms for fullscreen
+    net_wm_state: xproto::Atom,
+    net_wm_state_fullscreen: xproto::Atom,
+    /// Fullscreen state
+    fullscreen: bool,
+    /// Original font size (for reset)
+    original_font_size: f32,
 }
 
 impl App {
@@ -50,6 +57,10 @@ impl App {
 
         // Intern WM_DELETE_WINDOW atom
         let wm_delete_window = conn.intern_atom("WM_DELETE_WINDOW", false)?;
+
+        // Intern EWMH atoms for fullscreen
+        let net_wm_state = conn.intern_atom("_NET_WM_STATE", false)?;
+        let net_wm_state_fullscreen = conn.intern_atom("_NET_WM_STATE_FULLSCREEN", false)?;
 
         // Calculate initial window size
         let font_size = config.font.size;
@@ -181,6 +192,10 @@ impl App {
             shell: config.general.shell.clone(),
             cwd: config.general.working_directory.clone(),
             lua_runtime,
+            net_wm_state,
+            net_wm_state_fullscreen,
+            fullscreen: false,
+            original_font_size: config.font.size,
         })
     }
 
@@ -417,18 +432,69 @@ impl App {
                 Ok(true)
             }
 
-            // Scrollback (TODO: implement scrollback navigation)
-            Action::ScrollUp(_) | Action::ScrollDown(_) |
-            Action::ScrollPageUp | Action::ScrollPageDown |
-            Action::ScrollToTop | Action::ScrollToBottom => {
-                // TODO: Implement scrollback
-                Ok(false)
+            // Scrollback navigation
+            Action::ScrollUp(lines) => {
+                if let Some(pane) = self.tabs.focused_pane_mut() {
+                    pane.terminal.scroll_up(*lines);
+                    pane.mark_dirty();
+                }
+                Ok(true)
+            }
+            Action::ScrollDown(lines) => {
+                if let Some(pane) = self.tabs.focused_pane_mut() {
+                    pane.terminal.scroll_down(*lines);
+                    pane.mark_dirty();
+                }
+                Ok(true)
+            }
+            Action::ScrollPageUp => {
+                if let Some(pane) = self.tabs.focused_pane_mut() {
+                    let page = pane.terminal.rows().saturating_sub(1).max(1);
+                    pane.terminal.scroll_up(page);
+                    pane.mark_dirty();
+                }
+                Ok(true)
+            }
+            Action::ScrollPageDown => {
+                if let Some(pane) = self.tabs.focused_pane_mut() {
+                    let page = pane.terminal.rows().saturating_sub(1).max(1);
+                    pane.terminal.scroll_down(page);
+                    pane.mark_dirty();
+                }
+                Ok(true)
+            }
+            Action::ScrollToTop => {
+                if let Some(pane) = self.tabs.focused_pane_mut() {
+                    let total = pane.terminal.grid().scrollback_len();
+                    pane.terminal.scroll_up(total);
+                    pane.mark_dirty();
+                }
+                Ok(true)
+            }
+            Action::ScrollToBottom => {
+                if let Some(pane) = self.tabs.focused_pane_mut() {
+                    pane.terminal.reset_viewport();
+                    pane.mark_dirty();
+                }
+                Ok(true)
             }
 
-            // Font (TODO: implement runtime font size changes)
-            Action::IncreaseFontSize | Action::DecreaseFontSize | Action::ResetFontSize => {
-                // TODO: Implement font size changes
-                Ok(false)
+            // Font size changes
+            Action::IncreaseFontSize => {
+                let current = self.renderer.font_size();
+                let new_size = (current + 1.0).min(72.0);
+                self.change_font_size(new_size)?;
+                Ok(true)
+            }
+            Action::DecreaseFontSize => {
+                let current = self.renderer.font_size();
+                let new_size = (current - 1.0).max(6.0);
+                self.change_font_size(new_size)?;
+                Ok(true)
+            }
+            Action::ResetFontSize => {
+                self.change_font_size(self.original_font_size)?;
+                Ok(true)
             }
 
             // Search (TODO: implement search)
@@ -439,24 +505,82 @@ impl App {
 
             // Misc
             Action::ReloadConfig => {
-                info!("Reloading config");
-                // TODO: Implement config reload
+                info!("Reloading configuration");
+
+                // Load fresh config
+                let config = Config::load();
+
+                // Update keybindings
+                self.keybinds = config.keybindings();
+                info!("Keybindings reloaded");
+
+                // Update color palette
+                self.renderer.set_colors(config.color_palette());
+                info!("Color palette reloaded");
+
+                // Update tab bar config
+                self.tabs.set_tab_bar_config(&config.tab_bar);
+                info!("Tab bar config reloaded");
+
+                // Mark everything dirty to repaint
+                self.tabs.mark_all_dirty();
+
+                info!("Configuration reload complete");
                 Ok(true)
             }
             Action::ToggleFullscreen => {
-                // TODO: Implement fullscreen toggle
-                Ok(false)
+                info!("Toggling fullscreen");
+                self.fullscreen = !self.fullscreen;
+
+                // Send EWMH client message to toggle fullscreen
+                use x11rb::protocol::xproto::{ClientMessageEvent, CLIENT_MESSAGE_EVENT, EventMask, ConnectionExt};
+
+                let data = [
+                    if self.fullscreen { 1 } else { 0 }, // _NET_WM_STATE_ADD or _REMOVE
+                    self.net_wm_state_fullscreen,
+                    0,
+                    1, // Source indication: normal application
+                    0,
+                ];
+
+                let event = ClientMessageEvent {
+                    response_type: CLIENT_MESSAGE_EVENT,
+                    format: 32,
+                    sequence: 0,
+                    window: self.window.id(),
+                    type_: self.net_wm_state,
+                    data: data.into(),
+                };
+
+                let conn = self.window.connection();
+                conn.inner().send_event(
+                    false,
+                    conn.root(),
+                    EventMask::SUBSTRUCTURE_NOTIFY | EventMask::SUBSTRUCTURE_REDIRECT,
+                    event,
+                )?;
+                conn.flush()?;
+                Ok(true)
             }
             Action::ResetTerminal => {
-                // TODO: Implement terminal reset
+                info!("Resetting terminal");
                 if let Some(pane) = self.tabs.focused_pane_mut() {
+                    // Full terminal reset (like ESC c)
+                    let cols = pane.terminal.cols();
+                    let rows = pane.terminal.rows();
+                    pane.terminal = crate::terminal::Terminal::new(cols, rows);
                     pane.mark_dirty();
                 }
                 Ok(true)
             }
             Action::ClearScrollback => {
-                // TODO: Implement clear scrollback
-                Ok(false)
+                info!("Clearing scrollback");
+                if let Some(pane) = self.tabs.focused_pane_mut() {
+                    pane.terminal.grid_mut().clear_scrollback();
+                    pane.terminal.reset_viewport();
+                    pane.mark_dirty();
+                }
+                Ok(true)
             }
 
             // Send raw data
@@ -473,10 +597,24 @@ impl App {
                 Ok(true)
             }
 
-            // Resize (TODO)
-            Action::ResizeUp(_) | Action::ResizeDown(_) |
-            Action::ResizeLeft(_) | Action::ResizeRight(_) => {
-                Ok(false)
+            // Pane resize - adjust split ratios
+            Action::ResizeUp(amount) | Action::ResizeLeft(amount) => {
+                // Shrink focused pane (make it smaller)
+                let delta = -(*amount as f32 / 100.0).max(0.01);
+                if self.tabs.resize_focused_pane(delta) {
+                    self.tabs.relayout(self.width, self.height)?;
+                    self.tabs.mark_all_dirty();
+                }
+                Ok(true)
+            }
+            Action::ResizeDown(amount) | Action::ResizeRight(amount) => {
+                // Grow focused pane (make it larger)
+                let delta = (*amount as f32 / 100.0).max(0.01);
+                if self.tabs.resize_focused_pane(delta) {
+                    self.tabs.relayout(self.width, self.height)?;
+                    self.tabs.mark_all_dirty();
+                }
+                Ok(true)
             }
 
             // Lua scripting
@@ -586,6 +724,26 @@ impl App {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Change font size and relayout
+    fn change_font_size(&mut self, new_size: f32) -> Result<()> {
+        info!("Changing font size to {}", new_size);
+
+        // Update renderer font
+        self.renderer.set_font_size(new_size);
+
+        // Get new cell dimensions
+        let (cell_w, cell_h) = self.renderer.cell_size();
+        self.tabs.set_cell_size(cell_w, cell_h);
+
+        // Relayout all panes with new cell size
+        self.tabs.relayout(self.width, self.height)?;
+
+        // Mark all dirty for repaint
+        self.tabs.mark_all_dirty();
+
         Ok(())
     }
 

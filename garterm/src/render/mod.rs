@@ -280,6 +280,17 @@ impl Renderer {
         self.colors = colors;
     }
 
+    /// Change font size (clears glyph atlas)
+    pub fn set_font_size(&mut self, size: f32) {
+        self.fonts = self.fonts.with_size(size);
+        self.atlas.clear();
+    }
+
+    /// Get current font size
+    pub fn font_size(&self) -> f32 {
+        self.fonts.size()
+    }
+
     /// Render the terminal
     pub fn render(&mut self, terminal: &Terminal) -> Result<(), GpuError> {
         // Update atlas if dirty

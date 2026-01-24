@@ -262,6 +262,12 @@ impl Grid {
         self.scroll_offset = 0;
     }
 
+    /// Clear only scrollback (keep visible content)
+    pub fn clear_scrollback(&mut self) {
+        self.scrollback.clear();
+        self.scroll_offset = 0;
+    }
+
     /// Set scroll offset for viewing scrollback
     pub fn set_scroll_offset(&mut self, offset: usize) {
         self.scroll_offset = offset.min(self.scrollback.len());

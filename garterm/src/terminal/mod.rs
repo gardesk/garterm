@@ -129,6 +129,11 @@ impl Terminal {
         &self.grid
     }
 
+    /// Get the grid mutably
+    pub fn grid_mut(&mut self) -> &mut Grid {
+        &mut self.grid
+    }
+
     /// Get the cursor
     pub fn cursor(&self) -> &Cursor {
         &self.cursor

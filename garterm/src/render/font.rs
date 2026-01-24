@@ -172,6 +172,29 @@ impl FontCache {
         self.size
     }
 
+    /// Create a new FontCache with a different size (reuses loaded fonts)
+    pub fn with_size(&self, new_size: f32) -> Self {
+        // Recalculate cell metrics with new size
+        let regular = self.fonts.get(&FontStyle::Regular).unwrap();
+        let metrics = regular.metrics('M', new_size);
+        let line_metrics = regular.horizontal_line_metrics(new_size);
+
+        let cell_width = metrics.advance_width.ceil();
+        let cell_height = line_metrics
+            .map(|m| (m.ascent - m.descent + m.line_gap).ceil())
+            .unwrap_or(new_size * 1.2);
+        let baseline = line_metrics.map(|m| m.ascent).unwrap_or(new_size * 0.8);
+
+        Self {
+            fonts: self.fonts.clone(),
+            fallback_fonts: self.fallback_fonts.clone(),
+            size: new_size,
+            cell_width,
+            cell_height,
+            baseline,
+        }
+    }
+
     /// Get font for style
     pub fn font(&self, style: FontStyle) -> &Font {
         self.fonts.get(&style).unwrap_or_else(|| {
