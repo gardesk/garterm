@@ -923,18 +923,31 @@ impl Renderer {
                 let x = offset_x as f32 + col as f32 * cell_w;
                 let y = offset_y as f32 + row as f32 * cell_h;
 
+                // Handle inverse (reverse video) attribute
+                let inverse = cell.attrs.inverse;
+
                 // Check if cell is selected
                 let is_selected = selection
                     .map(|s| s.contains(row, col, cols))
                     .unwrap_or(false);
 
-                // Background: selection takes priority, then cell background
+                // Background: selection takes priority, then cell background (or fg if inverse)
                 if is_selected {
                     self.add_quad(
                         to_ndc_x(x), to_ndc_y(y),
                         to_ndc_x(x + cell_w), to_ndc_y(y + cell_h),
                         0.0, 0.0, 0.0, 0.0,
                         selection_bg,
+                        0.0,
+                    );
+                } else if inverse {
+                    // Inverse: background gets fg color (flip is_fg to get correct default)
+                    let bg_color = self.color_to_rgba(&cell.fg, true);
+                    self.add_quad(
+                        to_ndc_x(x), to_ndc_y(y),
+                        to_ndc_x(x + cell_w), to_ndc_y(y + cell_h),
+                        0.0, 0.0, 0.0, 0.0,
+                        bg_color,
                         0.0,
                     );
                 } else if cell.bg != CellColor::Default {
@@ -966,6 +979,9 @@ impl Renderer {
                             // For selected text, use contrasting foreground
                             let fg_color = if is_selected {
                                 [1.0, 1.0, 1.0, 1.0] // White text on selection
+                            } else if inverse {
+                                // Inverse: text gets bg color (use is_fg=false for correct default)
+                                self.color_to_rgba(&cell.bg, false)
                             } else {
                                 self.color_to_rgba(&cell.fg, true)
                             };
@@ -995,6 +1011,8 @@ impl Renderer {
                 if cell.attrs.underline != UnderlineStyle::None {
                     let fg_color = if is_selected {
                         [1.0, 1.0, 1.0, 1.0]
+                    } else if inverse {
+                        self.color_to_rgba(&cell.bg, false)
                     } else {
                         self.color_to_rgba(&cell.fg, true)
                     };
@@ -1050,6 +1068,8 @@ impl Renderer {
                 if cell.attrs.strikethrough {
                     let fg_color = if is_selected {
                         [1.0, 1.0, 1.0, 1.0]
+                    } else if inverse {
+                        self.color_to_rgba(&cell.bg, false)
                     } else {
                         self.color_to_rgba(&cell.fg, true)
                     };
