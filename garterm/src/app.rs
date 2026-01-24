@@ -51,10 +51,9 @@ impl App {
 
         info!("Created window {}x{}", width, height);
 
-        // Create renderer
+        // Create renderer (opens its own Xlib connection for wgpu)
         let renderer = Renderer::new(
             window.id(),
-            conn.screen_num() as i32,
             width,
             height,
             font_size,

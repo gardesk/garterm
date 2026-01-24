@@ -1,6 +1,7 @@
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
 use std::ptr::NonNull;
 use thiserror::Error;
+use x11_dl::xlib::Xlib;
 
 #[derive(Debug, Error)]
 pub enum GpuError {
@@ -12,40 +13,81 @@ pub enum GpuError {
     CreateSurface(#[from] wgpu::CreateSurfaceError),
     #[error("surface error: {0}")]
     Surface(#[from] wgpu::SurfaceError),
+    #[error("failed to open X11 display")]
+    X11Display,
+    #[error("failed to load xlib")]
+    XlibLoad,
 }
 
-/// Wrapper for X11 window handles for wgpu using Xcb (x11rb uses xcb internally)
-pub struct XcbWindowHandle {
-    window: u32,
-    connection: *mut std::ffi::c_void,
-    screen: i32,
+/// Xlib display connection for wgpu
+pub struct XlibDisplay {
+    xlib: Xlib,
+    display: *mut x11_dl::xlib::Display,
 }
 
-// SAFETY: The xcb connection pointer is thread-safe for read operations
-// and we only use it to create the wgpu surface.
-unsafe impl Send for XcbWindowHandle {}
-unsafe impl Sync for XcbWindowHandle {}
+impl XlibDisplay {
+    pub fn open() -> Result<Self, GpuError> {
+        let xlib = Xlib::open().map_err(|_| GpuError::XlibLoad)?;
+        let display = unsafe { (xlib.XOpenDisplay)(std::ptr::null()) };
+        if display.is_null() {
+            return Err(GpuError::X11Display);
+        }
+        Ok(Self { xlib, display })
+    }
 
-impl XcbWindowHandle {
-    pub fn new(window: u32, connection: *mut std::ffi::c_void, screen: i32) -> Self {
-        Self { window, connection, screen }
+    pub fn display_ptr(&self) -> *mut std::ffi::c_void {
+        self.display as *mut _
+    }
+
+    pub fn default_screen(&self) -> i32 {
+        unsafe { (self.xlib.XDefaultScreen)(self.display) }
     }
 }
 
-impl HasWindowHandle for XcbWindowHandle {
+impl Drop for XlibDisplay {
+    fn drop(&mut self) {
+        unsafe {
+            (self.xlib.XCloseDisplay)(self.display);
+        }
+    }
+}
+
+// SAFETY: Xlib display can be shared between threads
+unsafe impl Send for XlibDisplay {}
+unsafe impl Sync for XlibDisplay {}
+
+/// Wrapper for X11 window handles for wgpu using Xlib
+pub struct XlibWindowHandle {
+    window: u32,
+    display: *mut std::ffi::c_void,
+    screen: i32,
+}
+
+// SAFETY: The Xlib display pointer is thread-safe for read operations
+// and we only use it to create the wgpu surface.
+unsafe impl Send for XlibWindowHandle {}
+unsafe impl Sync for XlibWindowHandle {}
+
+impl XlibWindowHandle {
+    pub fn new(window: u32, display: *mut std::ffi::c_void, screen: i32) -> Self {
+        Self { window, display, screen }
+    }
+}
+
+impl HasWindowHandle for XlibWindowHandle {
     fn window_handle(&self) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
-        let handle = raw_window_handle::XcbWindowHandle::new(std::num::NonZeroU32::new(self.window).unwrap());
-        let raw = RawWindowHandle::Xcb(handle);
+        let handle = raw_window_handle::XlibWindowHandle::new(self.window as _);
+        let raw = RawWindowHandle::Xlib(handle);
         // SAFETY: The window handle is valid for the lifetime of this struct
         Ok(unsafe { raw_window_handle::WindowHandle::borrow_raw(raw) })
     }
 }
 
-impl HasDisplayHandle for XcbWindowHandle {
+impl HasDisplayHandle for XlibWindowHandle {
     fn display_handle(&self) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
-        let conn_ptr = NonNull::new(self.connection);
-        let handle = raw_window_handle::XcbDisplayHandle::new(conn_ptr, self.screen);
-        let raw = RawDisplayHandle::Xcb(handle);
+        let display_ptr = NonNull::new(self.display);
+        let handle = raw_window_handle::XlibDisplayHandle::new(display_ptr, self.screen);
+        let raw = RawDisplayHandle::Xlib(handle);
         // SAFETY: The display handle is valid for the lifetime of this struct
         Ok(unsafe { raw_window_handle::DisplayHandle::borrow_raw(raw) })
     }
@@ -57,29 +99,28 @@ pub struct GpuContext {
     pub queue: wgpu::Queue,
     pub surface: wgpu::Surface<'static>,
     pub surface_config: wgpu::SurfaceConfiguration,
+    // Keep xlib display alive for the lifetime of the surface
+    _xlib_display: XlibDisplay,
 }
 
 impl GpuContext {
     /// Create a new GPU context for an X11 window
-    ///
-    /// Note: x11rb's RustConnection doesn't provide a raw xcb connection pointer,
-    /// so we use a null pointer and rely on wgpu's Vulkan backend (which doesn't
-    /// need the xcb connection directly - it uses the window ID).
     pub async fn new(
         window: u32,
-        screen: i32,
         width: u32,
         height: u32,
     ) -> Result<Self, GpuError> {
+        // Open Xlib display for wgpu
+        let xlib_display = XlibDisplay::open()?;
+        let display = xlib_display.display_ptr();
+        let screen = xlib_display.default_screen();
+
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::VULKAN | wgpu::Backends::GL,
             ..Default::default()
         });
 
-        // x11rb's RustConnection doesn't give us a raw xcb_connection_t pointer.
-        // However, wgpu's Vulkan backend can work with just the window ID on X11.
-        // We pass a null pointer for the connection, which works for Vulkan.
-        let handle = XcbWindowHandle::new(window, std::ptr::null_mut(), screen);
+        let handle = XlibWindowHandle::new(window, display, screen);
 
         let surface = instance.create_surface(handle)?;
 
@@ -132,6 +173,7 @@ impl GpuContext {
             queue,
             surface,
             surface_config,
+            _xlib_display: xlib_display,
         })
     }
 

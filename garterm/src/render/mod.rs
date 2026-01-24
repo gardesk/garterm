@@ -56,12 +56,11 @@ impl Renderer {
     /// Create a new renderer
     pub async fn new(
         window: u32,
-        screen: i32,
         width: u32,
         height: u32,
         font_size: f32,
     ) -> Result<Self, GpuError> {
-        let gpu = GpuContext::new(window, screen, width, height).await?;
+        let gpu = GpuContext::new(window, width, height).await?;
         let fonts = FontCache::new(font_size).expect("Failed to load fonts");
 
         // Create glyph atlas
