@@ -4,6 +4,7 @@ use super::pane::PaneId;
 use super::split::Direction;
 use super::tab::{Tab, TabId};
 use super::tabbar::{TabBar, TabBarRenderData};
+use crate::config::TabBarConfig;
 use anyhow::Result;
 use std::collections::HashMap;
 
@@ -61,6 +62,11 @@ impl TabManager {
             cell_width,
             cell_height,
         })
+    }
+
+    /// Apply tab bar configuration
+    pub fn set_tab_bar_config(&mut self, config: &TabBarConfig) {
+        self.tab_bar = TabBar::from_config(config);
     }
 
     /// Get the active tab

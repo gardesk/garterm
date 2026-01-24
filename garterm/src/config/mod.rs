@@ -50,6 +50,7 @@ pub struct Config {
     pub colors: ColorsConfig,
     pub mouse: MouseConfig,
     pub bell: BellConfig,
+    pub tab_bar: TabBarConfig,
 
     #[serde(default)]
     pub keybinds: keybinds::KeybindConfig,
@@ -313,6 +314,62 @@ impl Default for BellConfig {
     }
 }
 
+/// Tab bar configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TabBarConfig {
+    /// Tab bar height in pixels
+    pub height: u32,
+
+    /// Tab bar position: "top" or "bottom"
+    pub position: String,
+
+    /// Show tab bar even with single tab
+    pub show_single_tab: bool,
+
+    /// Maximum tab width in pixels
+    pub max_tab_width: f32,
+
+    /// Horizontal padding inside each tab
+    pub tab_padding: f32,
+
+    /// Shorten paths in tab titles (e.g., ~/Projects/foo/bar → ~/P/f/bar)
+    pub shorten_paths: bool,
+
+    /// Tab bar background color [r, g, b, a] (0.0-1.0)
+    pub background: [f32; 4],
+
+    /// Active tab background color
+    pub active_bg: [f32; 4],
+
+    /// Inactive tab background color
+    pub inactive_bg: [f32; 4],
+
+    /// Active tab text color
+    pub active_fg: [f32; 4],
+
+    /// Inactive tab text color
+    pub inactive_fg: [f32; 4],
+}
+
+impl Default for TabBarConfig {
+    fn default() -> Self {
+        Self {
+            height: 24,
+            position: "top".into(),
+            show_single_tab: false,
+            max_tab_width: 200.0,
+            tab_padding: 16.0,
+            shorten_paths: true,
+            background: [0.08, 0.08, 0.12, 1.0],
+            active_bg: [0.15, 0.15, 0.20, 1.0],
+            inactive_bg: [0.10, 0.10, 0.14, 1.0],
+            active_fg: [1.0, 1.0, 1.0, 1.0],
+            inactive_fg: [0.7, 0.7, 0.7, 1.0],
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -323,6 +380,7 @@ impl Default for Config {
             colors: ColorsConfig::default(),
             mouse: MouseConfig::default(),
             bell: BellConfig::default(),
+            tab_bar: TabBarConfig::default(),
             keybinds: keybinds::KeybindConfig::default(),
         }
     }

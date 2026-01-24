@@ -198,7 +198,61 @@ fn parse_terminal_table(table: &mlua::Table) -> Config {
         parse_keybind_table(&keybinds, &mut config.keybinds);
     }
 
+    // Tab bar settings
+    if let Ok(tab_bar) = table.get::<mlua::Table>("tab_bar") {
+        if let Ok(height) = tab_bar.get::<u32>("height") {
+            config.tab_bar.height = height;
+        }
+        if let Ok(position) = tab_bar.get::<String>("position") {
+            config.tab_bar.position = position;
+        }
+        if let Ok(show_single) = tab_bar.get::<bool>("show_single_tab") {
+            config.tab_bar.show_single_tab = show_single;
+        }
+        if let Ok(max_width) = tab_bar.get::<f32>("max_tab_width") {
+            config.tab_bar.max_tab_width = max_width;
+        }
+        if let Ok(padding) = tab_bar.get::<f32>("tab_padding") {
+            config.tab_bar.tab_padding = padding;
+        }
+        if let Ok(shorten) = tab_bar.get::<bool>("shorten_paths") {
+            config.tab_bar.shorten_paths = shorten;
+        }
+        // Colors as arrays [r, g, b, a] or tables {r, g, b, a}
+        if let Ok(bg) = parse_color_array(&tab_bar, "background") {
+            config.tab_bar.background = bg;
+        }
+        if let Ok(active_bg) = parse_color_array(&tab_bar, "active_bg") {
+            config.tab_bar.active_bg = active_bg;
+        }
+        if let Ok(inactive_bg) = parse_color_array(&tab_bar, "inactive_bg") {
+            config.tab_bar.inactive_bg = inactive_bg;
+        }
+        if let Ok(active_fg) = parse_color_array(&tab_bar, "active_fg") {
+            config.tab_bar.active_fg = active_fg;
+        }
+        if let Ok(inactive_fg) = parse_color_array(&tab_bar, "inactive_fg") {
+            config.tab_bar.inactive_fg = inactive_fg;
+        }
+    }
+
     config
+}
+
+/// Parse an RGBA color array from Lua table
+fn parse_color_array(table: &mlua::Table, key: &str) -> Result<[f32; 4], mlua::Error> {
+    let color: mlua::Table = table.get(key)?;
+    // Try array format: {0.1, 0.2, 0.3, 1.0}
+    if let (Ok(r), Ok(g), Ok(b)) = (color.get::<f32>(1), color.get::<f32>(2), color.get::<f32>(3)) {
+        let a = color.get::<f32>(4).unwrap_or(1.0);
+        return Ok([r, g, b, a]);
+    }
+    // Try table format: {r = 0.1, g = 0.2, b = 0.3, a = 1.0}
+    if let (Ok(r), Ok(g), Ok(b)) = (color.get::<f32>("r"), color.get::<f32>("g"), color.get::<f32>("b")) {
+        let a = color.get::<f32>("a").unwrap_or(1.0);
+        return Ok([r, g, b, a]);
+    }
+    Err(mlua::Error::external("Invalid color format"))
 }
 
 /// Parse color values from Lua table

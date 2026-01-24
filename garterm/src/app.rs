@@ -113,7 +113,7 @@ impl App {
         info!("Terminal size: {}x{} (cell: {}x{})", cols, rows, cell_w, cell_h);
 
         // Create tab manager with initial tab/pane
-        let tabs = TabManager::new(
+        let mut tabs = TabManager::new(
             &config.general.shell,
             cols,
             rows,
@@ -123,6 +123,9 @@ impl App {
             cell_h,
             config.general.working_directory.as_deref(),
         )?;
+
+        // Apply tab bar config
+        tabs.set_tab_bar_config(&config.tab_bar);
 
         // Set up signal handler
         let signals = SignalHandler::new()?;
