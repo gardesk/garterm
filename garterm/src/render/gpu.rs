@@ -148,6 +148,7 @@ impl GpuContext {
             .await?;
 
         let surface_caps = surface.get_capabilities(&adapter);
+        tracing::info!("Available alpha modes: {:?}", surface_caps.alpha_modes);
         let surface_format = surface_caps
             .formats
             .iter()
@@ -155,13 +156,21 @@ impl GpuContext {
             .copied()
             .unwrap_or(surface_caps.formats[0]);
 
+        // Prefer opaque alpha mode to avoid compositing issues
+        let alpha_mode = if surface_caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::Opaque) {
+            wgpu::CompositeAlphaMode::Opaque
+        } else {
+            surface_caps.alpha_modes[0]
+        };
+        tracing::info!("Using alpha mode: {:?}", alpha_mode);
+
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
             width,
             height,
             present_mode: wgpu::PresentMode::Fifo,
-            alpha_mode: surface_caps.alpha_modes[0],
+            alpha_mode,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
