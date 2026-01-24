@@ -129,12 +129,12 @@ impl GpuContext {
         let display = xlib_display.display_ptr();
         let screen = xlib_display.default_screen();
 
-        // Prefer GL over Vulkan for better X11 compositor integration
+        // Try Vulkan first (higher texture limits), fall back to GL
+        // GL has a 2048 texture limit on some systems which breaks full-screen windows
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::GL,
+            backends: wgpu::Backends::VULKAN | wgpu::Backends::GL,
             ..Default::default()
         });
-        tracing::info!("Using OpenGL backend for better compositor compatibility");
 
         let handle = XlibWindowHandle::new(window, display, screen);
 
@@ -149,14 +149,17 @@ impl GpuContext {
             .await
             .ok_or(GpuError::NoAdapter)?;
 
-        tracing::info!("Using GPU adapter: {:?}", adapter.get_info().name);
+        let adapter_info = adapter.get_info();
+        tracing::info!("Using GPU adapter: {:?} (backend: {:?})", adapter_info.name, adapter_info.backend);
 
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: Some("garterm"),
                     required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::downlevel_webgl2_defaults(),
+                    // Use default limits (8192 max texture) instead of downlevel (2048)
+                    // to support full-screen windows on high-res displays
+                    required_limits: wgpu::Limits::default(),
                     memory_hints: wgpu::MemoryHints::Performance,
                 },
                 None,
