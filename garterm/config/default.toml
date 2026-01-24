@@ -249,20 +249,45 @@ audio = false
 #==============================================================================
 # GAR INTEGRATION (Lua)
 #==============================================================================
-# For power users: garterm can also read from ~/.config/gar/init.lua
+# For power users: garterm reads ~/.config/gar/init.lua for advanced features:
 #
-# Add this to your gar config:
+#   - Declarative session definitions (workspace layouts)
+#   - Imperative keybinds with Lua functions
+#   - Terminal API for programmatic control
+#
+# See init.lua.sample for comprehensive examples.
+#
+# Basic Lua config:
 #
 #   gar.terminal = {
 #       shell = "/bin/zsh",
-#       font = {
-#           family = "JetBrains Mono",
-#           size = 12.0,
-#       },
-#       colors = {
-#           preset = "catppuccin",
-#       },
-#       scrollback_lines = 50000,
+#       font = { family = "JetBrains Mono", size = 12.0 },
+#       colors = { preset = "catppuccin" },
 #   }
 #
-# The TOML config takes precedence over Lua if both exist.
+# Sessions (declarative workspaces):
+#
+#   gar.terminal.sessions = {
+#       webdev = {
+#           tabs = {
+#               { title = "Frontend", cwd = "~/app", cmd = "npm run dev" },
+#               { title = "Backend", cmd = "python manage.py runserver" },
+#               { title = "Editor", cmd = "nvim ." },
+#           }
+#       },
+#   }
+#
+# Function keybinds (imperative control):
+#
+#   gar.terminal.keybinds = {
+#       ["alt+w"] = { action = "load_session", session = "webdev" },
+#       ["alt+e"] = function()
+#           gar.terminal.split({ direction = "vertical" })
+#           gar.terminal.send_text(nil, "nvim .\n")
+#       end,
+#   }
+#
+# Load sessions via CLI: gartermctl load-session webdev
+#
+# The TOML config takes precedence over Lua for basic settings.
+# Lua keybinds are merged with (and override) TOML keybinds.

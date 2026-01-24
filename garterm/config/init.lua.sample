@@ -1,0 +1,281 @@
+-- garterm Lua configuration
+--
+-- Location: ~/.config/gar/init.lua (shared with gar window manager)
+--
+-- This file demonstrates garterm's Lua scripting capabilities:
+--   - Declarative session definitions (workspace layouts)
+--   - Imperative keybinds with Lua functions
+--   - Terminal API for programmatic control
+--
+-- garterm reads the gar.terminal table from this file. The gar.* stubs
+-- are provided so this file can be shared with the gar window manager.
+
+--------------------------------------------------------------------------------
+-- BASIC CONFIGURATION
+--------------------------------------------------------------------------------
+-- These settings mirror what's available in config.toml
+
+gar.terminal = {
+    -- Shell configuration
+    shell = "/bin/zsh",
+    -- shell_args = { "-l" },
+
+    -- Font settings
+    font = {
+        family = "JetBrains Mono",
+        size = 12.0,
+        bold_is_bright = false,
+        ligatures = false,
+    },
+
+    -- Color scheme (see config.toml for available presets)
+    colors = {
+        preset = "tokyo-night",
+        -- Or override individual colors:
+        -- foreground = "#c0caf5",
+        -- background = "#1a1b26",
+    },
+
+    -- Terminal behavior
+    scrollback_lines = 50000,
+    scroll_lines = 3,
+
+    -- Window settings
+    window = {
+        title = "garterm",
+        columns = 120,
+        rows = 36,
+        opacity = 0.95,
+    },
+}
+
+--------------------------------------------------------------------------------
+-- SESSIONS
+--------------------------------------------------------------------------------
+-- Declarative workspace definitions. Each session defines a set of tabs,
+-- and each tab can have a working directory, startup command, and splits.
+--
+-- Load a session with: gartermctl load-session <name>
+-- Or bind it to a key (see keybinds section below)
+
+gar.terminal.sessions = {
+    -- Web development workspace
+    webdev = {
+        tabs = {
+            -- Tab 1: Frontend dev server
+            {
+                title = "Frontend",
+                cwd = "~/projects/myapp/frontend",
+                cmd = "npm run dev",
+            },
+            -- Tab 2: Backend server
+            {
+                title = "Backend",
+                cwd = "~/projects/myapp/backend",
+                cmd = "python manage.py runserver",
+            },
+            -- Tab 3: Editor
+            {
+                title = "Editor",
+                cwd = "~/projects/myapp",
+                cmd = "nvim .",
+            },
+            -- Tab 4: Git and misc
+            {
+                title = "Shell",
+                cwd = "~/projects/myapp",
+            },
+        },
+    },
+
+    -- DevOps/monitoring workspace
+    ops = {
+        tabs = {
+            -- Tab 1: System logs
+            {
+                title = "Logs",
+                cmd = "journalctl -f",
+            },
+            -- Tab 2: Server connections with splits
+            {
+                title = "Servers",
+                cmd = "ssh prod1",
+                splits = {
+                    { direction = "horizontal", cmd = "ssh prod2" },
+                    { direction = "vertical", cmd = "ssh staging" },
+                },
+            },
+            -- Tab 3: Monitoring
+            {
+                title = "Monitor",
+                cmd = "htop",
+            },
+        },
+    },
+
+    -- Rust development
+    rust = {
+        tabs = {
+            {
+                title = "Code",
+                cwd = "~/projects/myrust",
+                cmd = "nvim .",
+            },
+            {
+                title = "Build",
+                cwd = "~/projects/myrust",
+                cmd = "cargo watch -x check",
+            },
+            {
+                title = "Test",
+                cwd = "~/projects/myrust",
+                cmd = "cargo watch -x test",
+            },
+            {
+                title = "Shell",
+                cwd = "~/projects/myrust",
+            },
+        },
+    },
+}
+
+--------------------------------------------------------------------------------
+-- KEYBINDS
+--------------------------------------------------------------------------------
+-- Keybinds can be:
+--   - String actions: "copy", "paste", "new_tab", "split_horizontal", etc.
+--   - Lua functions: Full access to gar.terminal.* API
+--   - Session loaders: { action = "load_session", session = "name" }
+--
+-- Modifiers: ctrl, alt, shift, super
+-- Keys: a-z, 0-9, F1-F12, Return, Tab, Escape, Space, Up, Down, etc.
+
+gar.terminal.keybinds = {
+    -- Quick session loading
+    ["alt+1"] = { action = "load_session", session = "webdev" },
+    ["alt+2"] = { action = "load_session", session = "ops" },
+    ["alt+3"] = { action = "load_session", session = "rust" },
+
+    -- Custom workspace creation with Lua function
+    ["alt+shift+w"] = function()
+        -- Create a dev workspace programmatically
+        local tab1 = gar.terminal.new_tab({
+            cwd = "~/projects/frontend",
+            title = "Frontend",
+        })
+        gar.terminal.send_text(tab1, "npm run dev\n")
+
+        local tab2 = gar.terminal.new_tab({
+            cwd = "~/projects/backend",
+            title = "Backend",
+        })
+        gar.terminal.send_text(tab2, "python manage.py runserver\n")
+
+        -- Focus the first tab
+        gar.terminal.focus_tab(1)
+    end,
+
+    -- Quick split with editor
+    ["alt+e"] = function()
+        gar.terminal.split({ direction = "vertical" })
+        gar.terminal.send_text(nil, "nvim .\n")
+    end,
+
+    -- Split and run htop
+    ["alt+m"] = function()
+        gar.terminal.split({ direction = "horizontal" })
+        gar.terminal.send_text(nil, "htop\n")
+    end,
+
+    -- SSH quick connect
+    ["alt+s"] = function()
+        local pane = gar.terminal.new_tab({ title = "Server" })
+        gar.terminal.send_text(pane, "ssh myserver\n")
+    end,
+
+    -- Git status in new tab
+    ["alt+g"] = function()
+        gar.terminal.new_tab({ title = "Git" })
+        gar.terminal.send_text(nil, "git status && git log --oneline -10\n")
+    end,
+
+    -- Run tests in split
+    ["alt+t"] = function()
+        gar.terminal.split({ direction = "vertical" })
+        gar.terminal.send_text(nil, "cargo test\n")
+    end,
+
+    -- String actions work too
+    ["ctrl+shift+n"] = "new_tab",
+    ["ctrl+shift+h"] = "split_horizontal",
+    ["ctrl+shift+v"] = "split_vertical",
+
+    -- Disable a default binding
+    -- ["ctrl+shift+f"] = "none",
+}
+
+--------------------------------------------------------------------------------
+-- GAR WINDOW MANAGER INTEGRATION
+--------------------------------------------------------------------------------
+-- When running under the gar window manager, you can trigger terminal
+-- actions from WM keybinds. The terminal functions are called via IPC.
+--
+-- Example: Open a terminal with the focused window's working directory
+--
+-- Note: These only work when gar WM is running with garterm IPC enabled.
+
+-- gar.bind(mod .. "+Return", function()
+--     -- This runs in the WM context and sends IPC to garterm
+--     gar.exec("garterm")
+-- end)
+--
+-- gar.bind(mod .. "+shift+Return", function()
+--     -- Get the focused window's working directory (if available)
+--     local cwd = gar.focused_window_cwd()
+--     if cwd then
+--         gar.exec("gartermctl new-tab --cwd " .. cwd)
+--     else
+--         gar.exec("garterm")
+--     end
+-- end)
+
+--------------------------------------------------------------------------------
+-- TERMINAL API REFERENCE
+--------------------------------------------------------------------------------
+-- These functions are available in keybind callbacks:
+--
+-- gar.terminal.new_tab({ cwd, cmd, title })
+--     Create a new tab. Returns tab_id.
+--     - cwd: Working directory (optional)
+--     - cmd: Command to run after shell prompt (optional)
+--     - title: Tab title (optional, usually set by shell)
+--
+-- gar.terminal.split({ direction, cwd, cmd })
+--     Split the focused pane. Returns pane_id.
+--     - direction: "horizontal" or "vertical"
+--     - cwd: Working directory (optional)
+--     - cmd: Command to run after shell prompt (optional)
+--
+-- gar.terminal.send_text(pane_id, text)
+--     Send text to a pane. Use nil for focused pane.
+--
+-- gar.terminal.close_tab(tab_id)
+--     Close a tab. Use nil for active tab.
+--
+-- gar.terminal.close_pane(pane_id)
+--     Close a pane. Use nil for focused pane.
+--
+-- gar.terminal.focus_tab(n)
+--     Focus tab by index (1-based).
+--
+-- gar.terminal.focus_pane(pane_id)
+--     Focus a specific pane by ID.
+--
+-- gar.terminal.focus_direction(dir)
+--     Focus pane in direction: "up", "down", "left", "right"
+--
+-- gar.terminal.next_tab() / gar.terminal.prev_tab()
+--     Cycle through tabs.
+--
+-- gar.terminal.load_session(name)
+--     Load a named session from gar.terminal.sessions.
