@@ -89,6 +89,11 @@ impl TabManager {
         self.active_tab_mut().and_then(|t| t.focused_pane_mut())
     }
 
+    /// Iterate over all tabs mutably
+    pub fn all_tabs_mut(&mut self) -> impl Iterator<Item = &mut Tab> {
+        self.tabs.values_mut()
+    }
+
     /// Create a new tab
     pub fn new_tab(
         &mut self,

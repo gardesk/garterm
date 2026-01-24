@@ -240,9 +240,9 @@ impl App {
             // Handle IPC commands
             self.handle_ipc()?;
 
-            // Read from ALL panes in the active tab (non-blocking)
-            // This ensures unfocused panes still receive PTY data
-            if let Some(tab) = self.tabs.active_tab_mut() {
+            // Read from ALL panes in ALL tabs (non-blocking)
+            // This ensures background tabs still receive PTY data and can run startup commands
+            for tab in self.tabs.all_tabs_mut() {
                 for pane in tab.panes.values_mut() {
                     loop {
                         match pane.read_pty(&mut buf) {
