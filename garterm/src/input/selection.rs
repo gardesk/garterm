@@ -104,7 +104,7 @@ impl Selection {
     }
 
     /// Check if a cell is within the selection
-    pub fn contains(&self, row: usize, col: usize, cols: usize) -> bool {
+    pub fn contains(&self, row: usize, col: usize, _cols: usize) -> bool {
         let Some((start, end)) = self.bounds() else {
             return false;
         };

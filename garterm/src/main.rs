@@ -6,6 +6,7 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 mod app;
+mod input;
 mod pty;
 mod render;
 mod terminal;

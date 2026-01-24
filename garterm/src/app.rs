@@ -1,3 +1,4 @@
+use crate::input::{Clipboard, KeyboardHandler, MouseButton, MouseEvent, MouseHandler, Selection, SelectionMode};
 use crate::pty::{Pty, PtySize, ReceivedSignal, SignalHandler};
 use crate::render::Renderer;
 use crate::terminal::Terminal;
@@ -17,6 +18,12 @@ pub struct App {
     signals: SignalHandler,
     running: bool,
     wm_delete_window: xproto::Atom,
+    clipboard: Clipboard,
+    selection: Selection,
+    /// Last click time for double/triple click detection
+    last_click: std::time::Instant,
+    /// Click count for double/triple click
+    click_count: u32,
 }
 
 impl App {
@@ -81,6 +88,9 @@ impl App {
         // Set up signal handler
         let signals = SignalHandler::new()?;
 
+        // Set up clipboard
+        let clipboard = Clipboard::new(&conn, window.id())?;
+
         Ok(Self {
             window,
             renderer,
@@ -89,6 +99,10 @@ impl App {
             signals,
             running: true,
             wm_delete_window,
+            clipboard,
+            selection: Selection::new(),
+            last_click: std::time::Instant::now(),
+            click_count: 0,
         })
     }
 
@@ -190,11 +204,18 @@ impl App {
     }
 
     fn handle_x11_events(&mut self) -> Result<()> {
-        let conn = self.window.connection();
+        use x11rb::protocol::Event;
 
-        while let Some(event) = conn.poll_event()? {
-            use x11rb::protocol::Event;
+        // Collect events first to avoid borrow issues
+        let mut events = Vec::new();
+        {
+            let conn = self.window.connection();
+            while let Some(event) = conn.poll_event()? {
+                events.push(event);
+            }
+        }
 
+        for event in events {
             match event {
                 Event::Expose(_) => {
                     self.terminal.mark_dirty();
@@ -225,9 +246,36 @@ impl App {
                 }
 
                 Event::KeyPress(e) => {
-                    if let Some(bytes) = self.translate_key(e) {
-                        self.pty.write_all(&bytes)?;
+                    self.handle_key_press(e)?;
+                }
+
+                Event::ButtonPress(e) => {
+                    self.handle_button_press(e)?;
+                }
+
+                Event::ButtonRelease(e) => {
+                    self.handle_button_release(e)?;
+                }
+
+                Event::MotionNotify(e) => {
+                    self.handle_motion(e)?;
+                }
+
+                Event::SelectionRequest(e) => {
+                    let conn = self.window.connection();
+                    self.clipboard.handle_selection_request(conn, &e)?;
+                }
+
+                Event::SelectionNotify(e) => {
+                    let conn = self.window.connection();
+                    if let Some(text) = self.clipboard.handle_selection_notify(conn, &e)? {
+                        // Paste the text
+                        self.pty.write_all(text.as_bytes())?;
                     }
+                }
+
+                Event::SelectionClear(e) => {
+                    self.clipboard.handle_selection_clear(&e);
                 }
 
                 Event::ClientMessage(e) => {
@@ -252,102 +300,236 @@ impl App {
         Ok(())
     }
 
-    fn translate_key(&self, event: xproto::KeyPressEvent) -> Option<Vec<u8>> {
-        use gartk_x11::{key_from_keycode, modifiers_from_x11};
+    fn handle_key_press(&mut self, event: xproto::KeyPressEvent) -> Result<()> {
         use gartk_core::Key;
+        use gartk_x11::{key_from_keycode, modifiers_from_x11};
 
         let modifiers = modifiers_from_x11(event.state);
         let key = key_from_keycode(event.detail, &modifiers);
-        let ctrl = modifiers.ctrl;
-        let alt = modifiers.alt;
 
-        // Handle special keys
-        let bytes: Vec<u8> = match key {
-            Key::Return => vec![b'\r'],
-            Key::Tab => vec![b'\t'],
-            Key::Escape => vec![0x1b],
-            Key::Backspace => vec![0x7f],
-            Key::Delete => vec![0x1b, b'[', b'3', b'~'],
-            Key::Home => vec![0x1b, b'[', b'H'],
-            Key::End => vec![0x1b, b'[', b'F'],
-            Key::PageUp => vec![0x1b, b'[', b'5', b'~'],
-            Key::PageDown => vec![0x1b, b'[', b'6', b'~'],
-            Key::Insert => vec![0x1b, b'[', b'2', b'~'],
-
-            Key::Up => {
-                if self.terminal.modes().application_cursor {
-                    vec![0x1b, b'O', b'A']
-                } else {
-                    vec![0x1b, b'[', b'A']
-                }
-            }
-            Key::Down => {
-                if self.terminal.modes().application_cursor {
-                    vec![0x1b, b'O', b'B']
-                } else {
-                    vec![0x1b, b'[', b'B']
-                }
-            }
-            Key::Right => {
-                if self.terminal.modes().application_cursor {
-                    vec![0x1b, b'O', b'C']
-                } else {
-                    vec![0x1b, b'[', b'C']
-                }
-            }
-            Key::Left => {
-                if self.terminal.modes().application_cursor {
-                    vec![0x1b, b'O', b'D']
-                } else {
-                    vec![0x1b, b'[', b'D']
-                }
-            }
-
-            Key::F1 => vec![0x1b, b'O', b'P'],
-            Key::F2 => vec![0x1b, b'O', b'Q'],
-            Key::F3 => vec![0x1b, b'O', b'R'],
-            Key::F4 => vec![0x1b, b'O', b'S'],
-            Key::F5 => vec![0x1b, b'[', b'1', b'5', b'~'],
-            Key::F6 => vec![0x1b, b'[', b'1', b'7', b'~'],
-            Key::F7 => vec![0x1b, b'[', b'1', b'8', b'~'],
-            Key::F8 => vec![0x1b, b'[', b'1', b'9', b'~'],
-            Key::F9 => vec![0x1b, b'[', b'2', b'0', b'~'],
-            Key::F10 => vec![0x1b, b'[', b'2', b'1', b'~'],
-            Key::F11 => vec![0x1b, b'[', b'2', b'3', b'~'],
-            Key::F12 => vec![0x1b, b'[', b'2', b'4', b'~'],
-
-            Key::Char(c) => {
-                if ctrl {
-                    // Ctrl+A = 0x01, etc.
-                    let code = c.to_ascii_lowercase() as u8;
-                    if code >= b'a' && code <= b'z' {
-                        vec![code - b'a' + 1]
-                    } else {
-                        return None;
+        // Handle Ctrl+Shift+C (copy) and Ctrl+Shift+V (paste)
+        if modifiers.ctrl && modifiers.shift {
+            match key {
+                Key::Char('c') | Key::Char('C') => {
+                    // Copy selection to clipboard
+                    if !self.selection.is_empty() {
+                        let text = self.selection.get_text(self.terminal.grid(), self.terminal.cols());
+                        if !text.is_empty() {
+                            self.clipboard.copy_clipboard(self.window.connection(), text)?;
+                        }
                     }
-                } else if alt {
-                    // Alt sends escape prefix
-                    let mut bytes = vec![0x1b];
-                    let mut buf = [0u8; 4];
-                    bytes.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
-                    bytes
-                } else {
-                    let mut buf = [0u8; 4];
-                    c.encode_utf8(&mut buf).as_bytes().to_vec()
+                    return Ok(());
                 }
-            }
-
-            Key::Space => {
-                if ctrl {
-                    vec![0] // Ctrl+Space = NUL
-                } else {
-                    vec![b' ']
+                Key::Char('v') | Key::Char('V') => {
+                    // Paste from clipboard
+                    self.clipboard.paste_clipboard(self.window.connection())?;
+                    return Ok(());
                 }
+                _ => {}
             }
+        }
 
-            _ => return None,
+        // Use KeyboardHandler for normal key translation
+        if let Some(bytes) = KeyboardHandler::translate(key, &modifiers, self.terminal.modes()) {
+            self.pty.write_all(&bytes)?;
+        }
+
+        Ok(())
+    }
+
+    fn handle_button_press(&mut self, event: xproto::ButtonPressEvent) -> Result<()> {
+        let (cell_w, cell_h) = self.renderer.cell_size();
+        let col = (event.event_x as f32 / cell_w) as usize;
+        let row = (event.event_y as f32 / cell_h) as usize;
+
+        let button = match event.detail {
+            1 => MouseButton::Left,
+            2 => MouseButton::Middle,
+            3 => MouseButton::Right,
+            4 => MouseButton::WheelUp,
+            5 => MouseButton::WheelDown,
+            _ => return Ok(()),
         };
 
-        Some(bytes)
+        // Check mouse mode for reporting to application
+        let modes = self.terminal.modes();
+        let state: u16 = event.state.into();
+        if modes.mouse_mode != crate::terminal::MouseMode::None {
+            let shift = state & 0x01 != 0;
+            let alt = state & 0x08 != 0;
+            let ctrl = state & 0x04 != 0;
+
+            if let Some(bytes) = MouseHandler::encode(
+                MouseEvent::Press(button),
+                col,
+                row,
+                shift,
+                alt,
+                ctrl,
+                modes.mouse_mode,
+                modes.mouse_encoding,
+            ) {
+                self.pty.write_all(&bytes)?;
+                return Ok(());
+            }
+        }
+
+        // Handle local mouse events (selection, paste)
+        match button {
+            MouseButton::Left => {
+                // Click detection for double/triple click
+                let now = std::time::Instant::now();
+                let elapsed = now.duration_since(self.last_click);
+
+                if elapsed.as_millis() < 400 {
+                    self.click_count += 1;
+                } else {
+                    self.click_count = 1;
+                }
+                self.last_click = now;
+
+                match self.click_count {
+                    1 => {
+                        // Single click - start selection
+                        let mode = if state & 0x04 != 0 {
+                            // Ctrl held - block selection
+                            SelectionMode::Block
+                        } else {
+                            SelectionMode::Normal
+                        };
+                        self.selection.start(row, col, mode);
+                    }
+                    2 => {
+                        // Double click - select word
+                        self.selection.select_word(row, col, self.terminal.grid(), self.terminal.cols());
+                    }
+                    _ => {
+                        // Triple+ click - select line
+                        self.selection.select_line(row, self.terminal.cols());
+                    }
+                }
+                self.terminal.mark_dirty();
+            }
+            MouseButton::Middle => {
+                // Middle click - paste from PRIMARY
+                self.clipboard.paste_primary(self.window.connection())?;
+            }
+            MouseButton::Right => {
+                // Right click could paste or show context menu
+                // For now, paste from clipboard
+                self.clipboard.paste_clipboard(self.window.connection())?;
+            }
+            MouseButton::WheelUp => {
+                // Scroll up - TODO: scrollback navigation
+            }
+            MouseButton::WheelDown => {
+                // Scroll down - TODO: scrollback navigation
+            }
+            MouseButton::None => {}
+        }
+
+        Ok(())
+    }
+
+    fn handle_button_release(&mut self, event: xproto::ButtonReleaseEvent) -> Result<()> {
+        let (cell_w, cell_h) = self.renderer.cell_size();
+        let col = (event.event_x as f32 / cell_w) as usize;
+        let row = (event.event_y as f32 / cell_h) as usize;
+
+        let button = match event.detail {
+            1 => MouseButton::Left,
+            2 => MouseButton::Middle,
+            3 => MouseButton::Right,
+            _ => return Ok(()),
+        };
+
+        // Check mouse mode for reporting
+        let modes = self.terminal.modes();
+        let state: u16 = event.state.into();
+        if modes.mouse_mode != crate::terminal::MouseMode::None {
+            let shift = state & 0x01 != 0;
+            let alt = state & 0x08 != 0;
+            let ctrl = state & 0x04 != 0;
+
+            if let Some(bytes) = MouseHandler::encode(
+                MouseEvent::Release(button),
+                col,
+                row,
+                shift,
+                alt,
+                ctrl,
+                modes.mouse_mode,
+                modes.mouse_encoding,
+            ) {
+                self.pty.write_all(&bytes)?;
+            }
+        }
+
+        // Finish selection and copy to PRIMARY
+        if button == MouseButton::Left && self.selection.is_active() {
+            self.selection.finish();
+
+            // Copy selection to PRIMARY (X11 convention)
+            if !self.selection.is_empty() {
+                let text = self.selection.get_text(self.terminal.grid(), self.terminal.cols());
+                if !text.is_empty() {
+                    self.clipboard.copy_primary(self.window.connection(), text)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn handle_motion(&mut self, event: xproto::MotionNotifyEvent) -> Result<()> {
+        let (cell_w, cell_h) = self.renderer.cell_size();
+        let col = (event.event_x as f32 / cell_w) as usize;
+        let row = (event.event_y as f32 / cell_h) as usize;
+
+        // Check mouse mode for motion reporting
+        let modes = self.terminal.modes();
+        let state: u16 = event.state.into();
+        if modes.mouse_mode != crate::terminal::MouseMode::None {
+            let shift = state & 0x01 != 0;
+            let alt = state & 0x08 != 0;
+            let ctrl = state & 0x04 != 0;
+
+            // Determine if button is held (drag) or just motion
+            let mouse_event = if state & 0x100 != 0 {
+                MouseEvent::Drag(MouseButton::Left)
+            } else if state & 0x200 != 0 {
+                MouseEvent::Drag(MouseButton::Middle)
+            } else if state & 0x400 != 0 {
+                MouseEvent::Drag(MouseButton::Right)
+            } else {
+                MouseEvent::Motion
+            };
+
+            if let Some(bytes) = MouseHandler::encode(
+                mouse_event,
+                col,
+                row,
+                shift,
+                alt,
+                ctrl,
+                modes.mouse_mode,
+                modes.mouse_encoding,
+            ) {
+                self.pty.write_all(&bytes)?;
+            }
+        }
+
+        // Update selection during drag
+        if self.selection.is_active() && state & 0x100 != 0 {
+            self.selection.update(row, col);
+            self.terminal.mark_dirty();
+        }
+
+        Ok(())
+    }
+
+    /// Get selection for rendering
+    pub fn selection(&self) -> &Selection {
+        &self.selection
     }
 }
