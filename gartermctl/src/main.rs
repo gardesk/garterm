@@ -36,6 +36,12 @@ enum Commands {
         /// Working directory
         #[arg(long)]
         cwd: Option<String>,
+        /// Command to run after shell starts
+        #[arg(long, short = 'e')]
+        exec: Option<String>,
+        /// Tab title
+        #[arg(long, short = 't')]
+        title: Option<String>,
     },
     /// Close the current tab
     CloseTab,
@@ -53,6 +59,17 @@ enum Commands {
         /// Split horizontally (side-by-side)
         #[arg(long, short = 'H')]
         horizontal: bool,
+        /// Working directory
+        #[arg(long)]
+        cwd: Option<String>,
+        /// Command to run after shell starts
+        #[arg(long, short = 'e')]
+        exec: Option<String>,
+    },
+    /// Load a named session from config
+    LoadSession {
+        /// Session name
+        name: String,
     },
     /// Close the focused pane
     ClosePane,
@@ -204,17 +221,24 @@ fn main() -> Result<()> {
     // Convert command enum to IPC Command
     let cmd = match &cli.command {
         Commands::List => unreachable!(),
-        Commands::NewTab { cwd } => Command::NewTab { cwd: cwd.clone() },
+        Commands::NewTab { cwd, exec, title } => Command::NewTab {
+            cwd: cwd.clone(),
+            startup_cmd: exec.clone(),
+            title: title.clone(),
+        },
         Commands::CloseTab => Command::CloseTab,
         Commands::NextTab => Command::NextTab,
         Commands::PrevTab => Command::PrevTab,
         Commands::Tab { index } => Command::SwitchTab { index: *index },
-        Commands::Split { horizontal } => Command::Split {
+        Commands::Split { horizontal, cwd, exec } => Command::Split {
             direction: if *horizontal { "horizontal".into() } else { "vertical".into() },
+            cwd: cwd.clone(),
+            startup_cmd: exec.clone(),
         },
         Commands::ClosePane => Command::ClosePane,
         Commands::Focus { direction } => Command::FocusPaneDirection { direction: direction.clone() },
         Commands::Send { text } => Command::SendText { text: text.clone() },
+        Commands::LoadSession { name } => Command::LoadSession { name: name.clone() },
         Commands::Info => Command::GetInfo,
         Commands::Reload => Command::Reload,
         Commands::Quit => Command::Quit,
