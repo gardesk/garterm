@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::{Action, Config, KeybindSet, Modifiers as ConfigModifiers};
 use crate::input::{Clipboard, KeyboardHandler, MouseButton, MouseEvent, MouseHandler, Selection, SelectionMode};
 use crate::pty::{PtySize, ReceivedSignal, SignalHandler};
 use crate::render::{PaneRenderInfo, Renderer};
@@ -20,6 +20,8 @@ pub struct App {
     wm_delete_window: xproto::Atom,
     clipboard: Clipboard,
     selection: Selection,
+    /// Keybindings from config
+    keybinds: KeybindSet,
     /// Last click time for double/triple click detection
     last_click: std::time::Instant,
     /// Click count for double/triple click
@@ -123,6 +125,10 @@ impl App {
         // Set up clipboard
         let clipboard = Clipboard::new(&conn, window.id())?;
 
+        // Load keybindings from config
+        let keybinds = config.keybindings();
+        info!("Loaded {} keybindings", keybinds.iter().count());
+
         Ok(Self {
             window,
             renderer,
@@ -132,6 +138,7 @@ impl App {
             wm_delete_window,
             clipboard,
             selection: Selection::new(),
+            keybinds,
             last_click: std::time::Instant::now(),
             click_count: 0,
             vsync: config.general.vsync,
@@ -259,6 +266,216 @@ impl App {
 
         info!("garterm exiting");
         Ok(())
+    }
+
+    /// Execute a keybind action
+    fn execute_action(&mut self, action: &Action) -> Result<bool> {
+        match action {
+            // Clipboard
+            Action::Copy => {
+                if !self.selection.is_empty() {
+                    if let Some(pane) = self.tabs.focused_pane() {
+                        let text = self.selection.get_text(pane.terminal.grid(), pane.terminal.cols());
+                        if !text.is_empty() {
+                            self.clipboard.copy_clipboard(self.window.connection(), text)?;
+                        }
+                    }
+                }
+                Ok(true)
+            }
+            Action::Paste => {
+                self.clipboard.paste_clipboard(self.window.connection())?;
+                Ok(true)
+            }
+            Action::PastePrimary => {
+                self.clipboard.paste_primary(self.window.connection())?;
+                Ok(true)
+            }
+
+            // Tabs
+            Action::NewTab => {
+                info!("Creating new tab");
+                self.tabs.new_tab(self.width, self.height, self.cwd.as_deref())?;
+                self.tabs.relayout(self.width, self.height)?;
+                self.tabs.mark_all_dirty();
+                Ok(true)
+            }
+            Action::CloseTab => {
+                self.tabs.close_tab();
+                self.tabs.relayout(self.width, self.height)?;
+                self.tabs.mark_all_dirty();
+                Ok(true)
+            }
+            Action::NextTab => {
+                self.tabs.next_tab();
+                self.tabs.mark_all_dirty();
+                Ok(true)
+            }
+            Action::PrevTab => {
+                self.tabs.prev_tab();
+                self.tabs.mark_all_dirty();
+                Ok(true)
+            }
+            Action::Tab(n) => {
+                self.tabs.switch_to_tab(*n);
+                self.tabs.mark_all_dirty();
+                Ok(true)
+            }
+
+            // Panes
+            Action::SplitHorizontal => {
+                info!("Horizontal split");
+                self.tabs.split_horizontal(self.cwd.as_deref())?;
+                self.tabs.relayout(self.width, self.height)?;
+                self.tabs.mark_all_dirty();
+                Ok(true)
+            }
+            Action::SplitVertical => {
+                info!("Vertical split");
+                self.tabs.split_vertical(self.cwd.as_deref())?;
+                self.tabs.relayout(self.width, self.height)?;
+                self.tabs.mark_all_dirty();
+                Ok(true)
+            }
+            Action::ClosePane => {
+                info!("Closing pane");
+                if self.tabs.close_pane() {
+                    self.tabs.relayout(self.width, self.height)?;
+                    self.tabs.mark_all_dirty();
+                }
+                Ok(true)
+            }
+            Action::FocusUp => {
+                self.tabs.focus_direction(Direction::Up, self.width, self.height);
+                self.tabs.mark_all_dirty();
+                Ok(true)
+            }
+            Action::FocusDown => {
+                self.tabs.focus_direction(Direction::Down, self.width, self.height);
+                self.tabs.mark_all_dirty();
+                Ok(true)
+            }
+            Action::FocusLeft => {
+                self.tabs.focus_direction(Direction::Left, self.width, self.height);
+                self.tabs.mark_all_dirty();
+                Ok(true)
+            }
+            Action::FocusRight => {
+                self.tabs.focus_direction(Direction::Right, self.width, self.height);
+                self.tabs.mark_all_dirty();
+                Ok(true)
+            }
+
+            // Scrollback (TODO: implement scrollback navigation)
+            Action::ScrollUp(_) | Action::ScrollDown(_) |
+            Action::ScrollPageUp | Action::ScrollPageDown |
+            Action::ScrollToTop | Action::ScrollToBottom => {
+                // TODO: Implement scrollback
+                Ok(false)
+            }
+
+            // Font (TODO: implement runtime font size changes)
+            Action::IncreaseFontSize | Action::DecreaseFontSize | Action::ResetFontSize => {
+                // TODO: Implement font size changes
+                Ok(false)
+            }
+
+            // Search (TODO: implement search)
+            Action::SearchForward | Action::SearchBackward => {
+                // TODO: Implement search
+                Ok(false)
+            }
+
+            // Misc
+            Action::ReloadConfig => {
+                info!("Reloading config");
+                // TODO: Implement config reload
+                Ok(true)
+            }
+            Action::ToggleFullscreen => {
+                // TODO: Implement fullscreen toggle
+                Ok(false)
+            }
+            Action::ResetTerminal => {
+                // TODO: Implement terminal reset
+                if let Some(pane) = self.tabs.focused_pane_mut() {
+                    pane.mark_dirty();
+                }
+                Ok(true)
+            }
+            Action::ClearScrollback => {
+                // TODO: Implement clear scrollback
+                Ok(false)
+            }
+
+            // Send raw data
+            Action::SendBytes(bytes) => {
+                if let Some(pane) = self.tabs.focused_pane_mut() {
+                    pane.write_pty(bytes)?;
+                }
+                Ok(true)
+            }
+            Action::SendText(text) => {
+                if let Some(pane) = self.tabs.focused_pane_mut() {
+                    pane.write_pty(text.as_bytes())?;
+                }
+                Ok(true)
+            }
+
+            // Resize (TODO)
+            Action::ResizeUp(_) | Action::ResizeDown(_) |
+            Action::ResizeLeft(_) | Action::ResizeRight(_) => {
+                Ok(false)
+            }
+
+            Action::None => Ok(false),
+        }
+    }
+
+    /// Convert gartk Modifiers to config Modifiers
+    fn modifiers_to_config(mods: &gartk_core::Modifiers) -> ConfigModifiers {
+        ConfigModifiers {
+            ctrl: mods.ctrl,
+            alt: mods.alt,
+            shift: mods.shift,
+            super_key: mods.super_key,
+        }
+    }
+
+    /// Convert gartk Key to string for keybind lookup
+    fn key_to_string(key: &gartk_core::Key) -> String {
+        use gartk_core::Key;
+        match key {
+            Key::Char(c) => c.to_lowercase().to_string(),
+            Key::Return => "return".into(),
+            Key::Tab => "tab".into(),
+            Key::Backspace => "backspace".into(),
+            Key::Escape => "escape".into(),
+            Key::Up => "up".into(),
+            Key::Down => "down".into(),
+            Key::Left => "left".into(),
+            Key::Right => "right".into(),
+            Key::Home => "home".into(),
+            Key::End => "end".into(),
+            Key::PageUp => "page_up".into(),
+            Key::PageDown => "page_down".into(),
+            Key::Insert => "insert".into(),
+            Key::Delete => "delete".into(),
+            Key::F1 => "f1".into(),
+            Key::F2 => "f2".into(),
+            Key::F3 => "f3".into(),
+            Key::F4 => "f4".into(),
+            Key::F5 => "f5".into(),
+            Key::F6 => "f6".into(),
+            Key::F7 => "f7".into(),
+            Key::F8 => "f8".into(),
+            Key::F9 => "f9".into(),
+            Key::F10 => "f10".into(),
+            Key::F11 => "f11".into(),
+            Key::F12 => "f12".into(),
+            Key::Space => "space".into(),
+            Key::Unknown(_) => "unknown".into(),
+        }
     }
 
     fn handle_signals(&mut self) -> Result<()> {
@@ -431,7 +648,6 @@ impl App {
     }
 
     fn handle_key_press(&mut self, event: xproto::KeyPressEvent) -> Result<()> {
-        use gartk_core::Key;
         use gartk_x11::{key_from_keycode, modifiers_from_x11};
 
         let modifiers = modifiers_from_x11(event.state);
@@ -440,129 +656,40 @@ impl App {
         tracing::debug!("Key press: {:?}, modifiers: ctrl={}, shift={}, alt={}",
             key, modifiers.ctrl, modifiers.shift, modifiers.alt);
 
-        // Get terminal from focused pane for mode checks
+        // Convert to config modifiers and key string for lookup
+        let config_mods = Self::modifiers_to_config(&modifiers);
+        let key_str = Self::key_to_string(&key);
+
+        // Check keybindings first
+        if let Some(action) = self.keybinds.get(&config_mods, &key_str).cloned() {
+            if self.execute_action(&action)? {
+                return Ok(());
+            }
+        }
+
+        // Handle Alt+1-9 for tab switching (special case - not in default keybinds)
+        if modifiers.alt && !modifiers.ctrl && !modifiers.shift {
+            if let gartk_core::Key::Char(c) = key {
+                if let Some(n) = c.to_digit(10) {
+                    if n >= 1 && n <= 9 {
+                        self.tabs.switch_to_tab(n as usize);
+                        self.tabs.mark_all_dirty();
+                        return Ok(());
+                    }
+                }
+                // Next/prev tab: Alt+]/[
+                match c {
+                    ']' => { self.tabs.next_tab(); self.tabs.mark_all_dirty(); return Ok(()); }
+                    '[' => { self.tabs.prev_tab(); self.tabs.mark_all_dirty(); return Ok(()); }
+                    _ => {}
+                }
+            }
+        }
+
+        // Get terminal modes for key translation
         let modes = self.tabs.focused_pane()
             .map(|p| *p.terminal.modes())
             .unwrap_or_default();
-
-        // Handle Ctrl+Shift+<key> for copy/paste (standard terminal convention)
-        if modifiers.ctrl && modifiers.shift {
-            match key {
-                // Copy
-                Key::Char('c') | Key::Char('C') => {
-                    if !self.selection.is_empty() {
-                        if let Some(pane) = self.tabs.focused_pane() {
-                            let text = self.selection.get_text(pane.terminal.grid(), pane.terminal.cols());
-                            if !text.is_empty() {
-                                self.clipboard.copy_clipboard(self.window.connection(), text)?;
-                            }
-                        }
-                    }
-                    return Ok(());
-                }
-                // Paste
-                Key::Char('v') | Key::Char('V') => {
-                    self.clipboard.paste_clipboard(self.window.connection())?;
-                    return Ok(());
-                }
-                _ => {}
-            }
-        }
-
-        // Handle Alt+<key> for tabs/panes (avoids WM conflicts)
-        if modifiers.alt && !modifiers.ctrl {
-            match key {
-                // New tab: Alt+T
-                Key::Char('t') | Key::Char('T') => {
-                    info!("Creating new tab");
-                    self.tabs.new_tab(self.width, self.height, self.cwd.as_deref())?;
-                    info!("Tab created, now have {} tabs", self.tabs.tab_count());
-                    // Relayout all tabs (tab bar may have appeared)
-                    self.tabs.relayout(self.width, self.height)?;
-                    self.tabs.mark_all_dirty();
-                    return Ok(());
-                }
-                // Close pane: Alt+W
-                Key::Char('w') | Key::Char('W') => {
-                    info!("Closing pane");
-                    if self.tabs.close_pane() {
-                        // Relayout remaining panes to fill the space
-                        self.tabs.relayout(self.width, self.height)?;
-                        self.tabs.mark_all_dirty();
-                    }
-                    return Ok(());
-                }
-                // Horizontal split: Alt+H
-                Key::Char('h') | Key::Char('H') => {
-                    info!("Horizontal split");
-                    self.tabs.split_horizontal(self.cwd.as_deref())?;
-                    // Must relayout after split to resize panes correctly
-                    self.tabs.relayout(self.width, self.height)?;
-                    info!("After split, active tab has {} panes",
-                        self.tabs.active_tab().map(|t| t.panes.len()).unwrap_or(0));
-                    if let Some(pane) = self.tabs.focused_pane_mut() {
-                        pane.mark_dirty();
-                    }
-                    return Ok(());
-                }
-                // Vertical split: Alt+V
-                Key::Char('v') | Key::Char('V') => {
-                    info!("Vertical split");
-                    self.tabs.split_vertical(self.cwd.as_deref())?;
-                    // Must relayout after split to resize panes correctly
-                    self.tabs.relayout(self.width, self.height)?;
-                    info!("After split, active tab has {} panes",
-                        self.tabs.active_tab().map(|t| t.panes.len()).unwrap_or(0));
-                    if let Some(pane) = self.tabs.focused_pane_mut() {
-                        pane.mark_dirty();
-                    }
-                    return Ok(());
-                }
-                // Focus navigation: Alt+Arrow
-                Key::Up => {
-                    self.tabs.focus_direction(Direction::Up, self.width, self.height);
-                    if let Some(pane) = self.tabs.focused_pane_mut() {
-                        pane.mark_dirty();
-                    }
-                    return Ok(());
-                }
-                Key::Down => {
-                    self.tabs.focus_direction(Direction::Down, self.width, self.height);
-                    if let Some(pane) = self.tabs.focused_pane_mut() {
-                        pane.mark_dirty();
-                    }
-                    return Ok(());
-                }
-                Key::Left => {
-                    self.tabs.focus_direction(Direction::Left, self.width, self.height);
-                    if let Some(pane) = self.tabs.focused_pane_mut() {
-                        pane.mark_dirty();
-                    }
-                    return Ok(());
-                }
-                Key::Right => {
-                    self.tabs.focus_direction(Direction::Right, self.width, self.height);
-                    if let Some(pane) = self.tabs.focused_pane_mut() {
-                        pane.mark_dirty();
-                    }
-                    return Ok(());
-                }
-                // Tab switching: Alt+1-9
-                Key::Char('1') => { self.tabs.switch_to_tab(1); return Ok(()); }
-                Key::Char('2') => { self.tabs.switch_to_tab(2); return Ok(()); }
-                Key::Char('3') => { self.tabs.switch_to_tab(3); return Ok(()); }
-                Key::Char('4') => { self.tabs.switch_to_tab(4); return Ok(()); }
-                Key::Char('5') => { self.tabs.switch_to_tab(5); return Ok(()); }
-                Key::Char('6') => { self.tabs.switch_to_tab(6); return Ok(()); }
-                Key::Char('7') => { self.tabs.switch_to_tab(7); return Ok(()); }
-                Key::Char('8') => { self.tabs.switch_to_tab(8); return Ok(()); }
-                Key::Char('9') => { self.tabs.switch_to_tab(9); return Ok(()); }
-                // Next/prev tab: Alt+]/[
-                Key::Char(']') => { self.tabs.next_tab(); return Ok(()); }
-                Key::Char('[') => { self.tabs.prev_tab(); return Ok(()); }
-                _ => {}
-            }
-        }
 
         // Normal key translation - send to focused pane
         if let Some(bytes) = KeyboardHandler::translate(key, &modifiers, &modes) {

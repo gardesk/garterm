@@ -258,40 +258,35 @@ impl KeybindSet {
     }
 
     /// Create default keybindings
+    /// Uses Alt+key for tabs/panes to avoid conflicts with window managers
     pub fn defaults() -> Self {
         let mut set = Self::new();
 
-        // Clipboard
+        // Clipboard (Ctrl+Shift is standard terminal convention)
         set.add(Keybind::new(Modifiers::ctrl_shift(), "c", Action::Copy));
         set.add(Keybind::new(Modifiers::ctrl_shift(), "v", Action::Paste));
 
-        // Tabs
-        set.add(Keybind::new(Modifiers::ctrl_shift(), "t", Action::NewTab));
-        set.add(Keybind::new(Modifiers::ctrl_shift(), "w", Action::ClosePane));
-        set.add(Keybind::new(Modifiers::ctrl_shift(), "Tab", Action::NextTab));
-        set.add(Keybind::new(
-            Modifiers { ctrl: true, shift: true, ..Default::default() },
-            "ISO_Left_Tab",  // Shift+Tab on many systems
-            Action::PrevTab,
-        ));
+        // Tabs (Alt+key to avoid WM conflicts)
+        set.add(Keybind::new(Modifiers::alt(), "t", Action::NewTab));
+        set.add(Keybind::new(Modifiers::alt(), "w", Action::ClosePane));
 
-        // Splits
-        set.add(Keybind::new(Modifiers::ctrl_shift(), "h", Action::SplitHorizontal));
-        set.add(Keybind::new(Modifiers::ctrl_shift(), "e", Action::SplitVertical));
+        // Splits (Alt+key)
+        set.add(Keybind::new(Modifiers::alt(), "h", Action::SplitHorizontal));
+        set.add(Keybind::new(Modifiers::alt(), "v", Action::SplitVertical));
 
-        // Focus navigation
-        set.add(Keybind::new(Modifiers::ctrl_shift(), "Up", Action::FocusUp));
-        set.add(Keybind::new(Modifiers::ctrl_shift(), "Down", Action::FocusDown));
-        set.add(Keybind::new(Modifiers::ctrl_shift(), "Left", Action::FocusLeft));
-        set.add(Keybind::new(Modifiers::ctrl_shift(), "Right", Action::FocusRight));
+        // Focus navigation (Alt+Arrow)
+        set.add(Keybind::new(Modifiers::alt(), "up", Action::FocusUp));
+        set.add(Keybind::new(Modifiers::alt(), "down", Action::FocusDown));
+        set.add(Keybind::new(Modifiers::alt(), "left", Action::FocusLeft));
+        set.add(Keybind::new(Modifiers::alt(), "right", Action::FocusRight));
 
         // Scrollback
-        set.add(Keybind::new(Modifiers::shift(), "Page_Up", Action::ScrollPageUp));
-        set.add(Keybind::new(Modifiers::shift(), "Page_Down", Action::ScrollPageDown));
-        set.add(Keybind::new(Modifiers::ctrl_shift(), "Home", Action::ScrollToTop));
-        set.add(Keybind::new(Modifiers::ctrl_shift(), "End", Action::ScrollToBottom));
+        set.add(Keybind::new(Modifiers::shift(), "page_up", Action::ScrollPageUp));
+        set.add(Keybind::new(Modifiers::shift(), "page_down", Action::ScrollPageDown));
+        set.add(Keybind::new(Modifiers::ctrl_shift(), "home", Action::ScrollToTop));
+        set.add(Keybind::new(Modifiers::ctrl_shift(), "end", Action::ScrollToBottom));
 
-        // Font size
+        // Font size (Ctrl+Shift standard)
         set.add(Keybind::new(Modifiers::ctrl_shift(), "equal", Action::IncreaseFontSize));
         set.add(Keybind::new(Modifiers::ctrl_shift(), "plus", Action::IncreaseFontSize));
         set.add(Keybind::new(Modifiers::ctrl_shift(), "minus", Action::DecreaseFontSize));
