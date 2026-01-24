@@ -28,18 +28,24 @@ pub struct TabManager {
 
 impl TabManager {
     /// Create a new tab manager with an initial tab
+    ///
+    /// Note: `rows` is ignored and recalculated from content height (minus tab bar)
     pub fn new(
         shell: &str,
         cols: usize,
-        rows: usize,
+        _rows: usize,
         width: u32,
         height: u32,
         cell_width: f32,
         cell_height: f32,
         cwd: Option<&std::path::Path>,
     ) -> Result<Self> {
+        let tab_bar = TabBar::new();
+        let content_height = tab_bar.content_height(height);
+        let content_rows = (content_height as f32 / cell_height) as usize;
+
         let tab_id = TabId(0);
-        let tab = Tab::new(tab_id, shell, cols, rows, width, height, cwd)?;
+        let tab = Tab::new(tab_id, shell, cols.max(1), content_rows.max(1), width, content_height, cwd)?;
 
         let mut tabs = HashMap::new();
         tabs.insert(tab_id, tab);
@@ -48,7 +54,7 @@ impl TabManager {
             tabs,
             tab_order: vec![tab_id],
             active_tab: tab_id,
-            tab_bar: TabBar::new(),
+            tab_bar,
             next_tab_id: 1,
             shell: shell.to_string(),
             cell_width,

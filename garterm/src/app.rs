@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::input::{Clipboard, KeyboardHandler, MouseButton, MouseEvent, MouseHandler, Selection, SelectionMode};
 use crate::pty::{PtySize, ReceivedSignal, SignalHandler};
-use crate::render::Renderer;
+use crate::render::{PaneRenderInfo, Renderer};
 use crate::ui::{Direction, TabManager};
 use anyhow::Result;
 use gartk_x11::{Connection, Window, WindowConfig};
@@ -177,30 +177,29 @@ impl App {
                 self.handle_x11_events()?;
             }
 
-            // Read from all PTYs (non-blocking)
-            // For now, just read from the focused pane
-            if let Some(pane) = self.tabs.focused_pane_mut() {
-                loop {
-                    match pane.read_pty(&mut buf) {
-                        Ok(0) => break, // EOF
-                        Ok(_n) => {
-                            // Data was read and processed by terminal
-                            continue; // Try to read more
+            // Read from ALL panes in the active tab (non-blocking)
+            // This ensures unfocused panes still receive PTY data
+            if let Some(tab) = self.tabs.active_tab_mut() {
+                for pane in tab.panes.values_mut() {
+                    loop {
+                        match pane.read_pty(&mut buf) {
+                            Ok(0) => break, // EOF
+                            Ok(_n) => continue, // Try to read more
+                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                            Err(_) => break,
                         }
-                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                        Err(_) => break,
                     }
-                }
 
-                // Flush terminal responses back to PTY
-                let responses: Vec<_> = pane.terminal.take_responses().collect();
-                for response in responses {
-                    let _ = pane.write_pty(&response);
-                }
+                    // Flush terminal responses back to PTY
+                    let responses: Vec<_> = pane.terminal.take_responses().collect();
+                    for response in responses {
+                        let _ = pane.write_pty(&response);
+                    }
 
-                // Handle bell
-                if pane.terminal.take_bell() {
-                    tracing::debug!("Bell!");
+                    // Handle bell
+                    if pane.terminal.take_bell() {
+                        tracing::debug!("Bell!");
+                    }
                 }
             }
 
@@ -210,15 +209,40 @@ impl App {
                 self.running = false;
             }
 
-            // Render
-            let dirty = self.tabs.focused_pane()
-                .map(|p| p.terminal.is_dirty())
+            // Render all panes in the active tab
+            let any_dirty = self.tabs.active_tab()
+                .map(|tab| tab.panes.values().any(|p| p.terminal.is_dirty()))
                 .unwrap_or(false);
 
-            if !self.vsync || dirty {
-                if let Some(pane) = self.tabs.focused_pane_mut() {
-                    pane.take_dirty();
-                    self.renderer.render(&pane.terminal)?;
+            if !self.vsync || any_dirty {
+                // Clear dirty flags first
+                if let Some(tab) = self.tabs.active_tab_mut() {
+                    for pane in tab.panes.values_mut() {
+                        pane.take_dirty();
+                    }
+                }
+
+                // Get tab bar render data
+                let tab_bar_data = self.tabs.render_tab_bar(self.width, self.height);
+
+                // Collect pane render info and render
+                // Add content_offset to y positions (to account for tab bar)
+                let content_offset = self.tabs.content_offset();
+                let pane_infos: Vec<PaneRenderInfo> = self.tabs.active_tab()
+                    .map(|tab| {
+                        tab.panes.values().map(|pane| PaneRenderInfo {
+                            terminal: &pane.terminal,
+                            x: pane.x,
+                            y: pane.y + content_offset,
+                            width: pane.width,
+                            height: pane.height,
+                            focused: pane.focused,
+                        }).collect()
+                    })
+                    .unwrap_or_default();
+
+                if !pane_infos.is_empty() {
+                    self.renderer.render_scene(&tab_bar_data, &pane_infos)?;
                 }
                 self.window.connection().flush()?;
             }
@@ -306,10 +330,31 @@ impl App {
 
                         info!("Window resized to {}x{}", width, height);
 
-                        // Force immediate re-render
-                        if let Some(pane) = self.tabs.focused_pane_mut() {
-                            pane.mark_dirty();
-                            self.renderer.render(&pane.terminal)?;
+                        // Force immediate re-render of all panes
+                        if let Some(tab) = self.tabs.active_tab_mut() {
+                            for pane in tab.panes.values_mut() {
+                                pane.mark_dirty();
+                            }
+                        }
+
+                        // Render tab bar + all panes
+                        let tab_bar_data = self.tabs.render_tab_bar(width, height);
+                        let content_offset = self.tabs.content_offset();
+                        let pane_infos: Vec<PaneRenderInfo> = self.tabs.active_tab()
+                            .map(|tab| {
+                                tab.panes.values().map(|pane| PaneRenderInfo {
+                                    terminal: &pane.terminal,
+                                    x: pane.x,
+                                    y: pane.y + content_offset,
+                                    width: pane.width,
+                                    height: pane.height,
+                                    focused: pane.focused,
+                                }).collect()
+                            })
+                            .unwrap_or_default();
+
+                        if !pane_infos.is_empty() {
+                            self.renderer.render_scene(&tab_bar_data, &pane_infos)?;
                         }
                     }
                 }
@@ -383,12 +428,15 @@ impl App {
         let modifiers = modifiers_from_x11(event.state);
         let key = key_from_keycode(event.detail, &modifiers);
 
+        tracing::debug!("Key press: {:?}, modifiers: ctrl={}, shift={}, alt={}",
+            key, modifiers.ctrl, modifiers.shift, modifiers.alt);
+
         // Get terminal from focused pane for mode checks
         let modes = self.tabs.focused_pane()
             .map(|p| *p.terminal.modes())
             .unwrap_or_default();
 
-        // Handle Ctrl+Shift+<key> terminal keybinds
+        // Handle Ctrl+Shift+<key> for copy/paste (standard terminal convention)
         if modifiers.ctrl && modifiers.shift {
             match key {
                 // Copy
@@ -408,39 +456,59 @@ impl App {
                     self.clipboard.paste_clipboard(self.window.connection())?;
                     return Ok(());
                 }
-                // New tab
+                _ => {}
+            }
+        }
+
+        // Handle Alt+<key> for tabs/panes (avoids WM conflicts)
+        if modifiers.alt && !modifiers.ctrl {
+            match key {
+                // New tab: Alt+T
                 Key::Char('t') | Key::Char('T') => {
+                    info!("Creating new tab");
                     self.tabs.new_tab(self.width, self.height, self.cwd.as_deref())?;
+                    info!("Tab created, now have {} tabs", self.tabs.tab_count());
                     if let Some(pane) = self.tabs.focused_pane_mut() {
                         pane.mark_dirty();
                     }
                     return Ok(());
                 }
-                // Close pane (or tab if last pane)
+                // Close pane: Alt+W
                 Key::Char('w') | Key::Char('W') => {
+                    info!("Closing pane");
                     self.tabs.close_pane();
                     if let Some(pane) = self.tabs.focused_pane_mut() {
                         pane.mark_dirty();
                     }
                     return Ok(());
                 }
-                // Horizontal split
+                // Horizontal split: Alt+H
                 Key::Char('h') | Key::Char('H') => {
+                    info!("Horizontal split");
                     self.tabs.split_horizontal(self.cwd.as_deref())?;
+                    // Must relayout after split to resize panes correctly
+                    self.tabs.relayout(self.width, self.height)?;
+                    info!("After split, active tab has {} panes",
+                        self.tabs.active_tab().map(|t| t.panes.len()).unwrap_or(0));
                     if let Some(pane) = self.tabs.focused_pane_mut() {
                         pane.mark_dirty();
                     }
                     return Ok(());
                 }
-                // Vertical split
-                Key::Char('e') | Key::Char('E') => {
+                // Vertical split: Alt+V
+                Key::Char('v') | Key::Char('V') => {
+                    info!("Vertical split");
                     self.tabs.split_vertical(self.cwd.as_deref())?;
+                    // Must relayout after split to resize panes correctly
+                    self.tabs.relayout(self.width, self.height)?;
+                    info!("After split, active tab has {} panes",
+                        self.tabs.active_tab().map(|t| t.panes.len()).unwrap_or(0));
                     if let Some(pane) = self.tabs.focused_pane_mut() {
                         pane.mark_dirty();
                     }
                     return Ok(());
                 }
-                // Focus navigation
+                // Focus navigation: Alt+Arrow
                 Key::Up => {
                     self.tabs.focus_direction(Direction::Up, self.width, self.height);
                     if let Some(pane) = self.tabs.focused_pane_mut() {
@@ -469,7 +537,7 @@ impl App {
                     }
                     return Ok(());
                 }
-                // Tab switching
+                // Tab switching: Alt+1-9
                 Key::Char('1') => { self.tabs.switch_to_tab(1); return Ok(()); }
                 Key::Char('2') => { self.tabs.switch_to_tab(2); return Ok(()); }
                 Key::Char('3') => { self.tabs.switch_to_tab(3); return Ok(()); }
@@ -479,6 +547,9 @@ impl App {
                 Key::Char('7') => { self.tabs.switch_to_tab(7); return Ok(()); }
                 Key::Char('8') => { self.tabs.switch_to_tab(8); return Ok(()); }
                 Key::Char('9') => { self.tabs.switch_to_tab(9); return Ok(()); }
+                // Next/prev tab: Alt+]/[
+                Key::Char(']') => { self.tabs.next_tab(); return Ok(()); }
+                Key::Char('[') => { self.tabs.prev_tab(); return Ok(()); }
                 _ => {}
             }
         }

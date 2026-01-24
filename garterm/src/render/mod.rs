@@ -7,8 +7,19 @@ pub use gpu::{GpuContext, GpuError};
 
 use crate::config::ColorPalette;
 use crate::terminal::{CellColor, Terminal};
+use crate::ui::{TabBarRenderData, TabRect};
 use atlas::{GlyphAtlas, GlyphKey};
 use bytemuck::{Pod, Zeroable};
+
+/// Information needed to render a pane at a specific position
+pub struct PaneRenderInfo<'a> {
+    pub terminal: &'a Terminal,
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    pub focused: bool,
+}
 
 /// Vertex for rendering quads (glyphs and backgrounds)
 #[repr(C)]
@@ -313,9 +324,347 @@ impl Renderer {
         Ok(())
     }
 
-    fn build_vertices(&mut self, terminal: &Terminal) {
+    /// Render the full scene: tab bar + all panes
+    pub fn render_scene(
+        &mut self,
+        tab_bar: &TabBarRenderData,
+        panes: &[PaneRenderInfo<'_>],
+    ) -> Result<(), GpuError> {
+        // Update atlas if dirty
+        if self.atlas.is_dirty() {
+            tracing::debug!("Uploading atlas texture");
+            self.gpu.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.atlas_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                self.atlas.data(),
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(self.atlas.size().0),
+                    rows_per_image: Some(self.atlas.size().1),
+                },
+                wgpu::Extent3d {
+                    width: self.atlas.size().0,
+                    height: self.atlas.size().1,
+                    depth_or_array_layers: 1,
+                },
+            );
+            self.atlas.clear_dirty();
+        }
+
+        // Build vertex data
         self.vertices.clear();
         self.indices.clear();
+
+        // Build tab bar vertices first (at top)
+        self.build_tab_bar(tab_bar);
+
+        // Build pane vertices
+        for (i, pane) in panes.iter().enumerate() {
+            self.build_vertices_at(pane.terminal, pane.x, pane.y, false);
+
+            if panes.len() > 1 {
+                self.add_pane_border(pane.x, pane.y, pane.width, pane.height, pane.focused);
+            }
+
+            tracing::trace!(
+                "Pane {} at ({}, {}) size {}x{} focused={}",
+                i, pane.x, pane.y, pane.width, pane.height, pane.focused
+            );
+        }
+
+        tracing::debug!(
+            "Rendering {} panes + tab bar: {} vertices, {} indices",
+            panes.len(),
+            self.vertices.len(),
+            self.indices.len()
+        );
+
+        // Upload and render
+        self.gpu.queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
+        self.gpu.queue.write_buffer(&self.index_buffer, 0, bytemuck::cast_slice(&self.indices));
+
+        let output = self.gpu.surface.get_current_texture()?;
+        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder = self.gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("render_encoder"),
+        });
+
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("terminal_render_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(self.colors.background.to_wgpu_color()),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            render_pass.set_pipeline(&self.pipeline);
+            render_pass.set_bind_group(0, &self.atlas_bind_group, &[]);
+            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            render_pass.draw_indexed(0..self.indices.len() as u32, 0, 0..1);
+        }
+
+        self.gpu.queue.submit(std::iter::once(encoder.finish()));
+        output.present();
+
+        self.gpu.device.poll(wgpu::Maintain::Wait);
+        self.gpu.sync_display();
+
+        Ok(())
+    }
+
+    /// Build vertices for the tab bar
+    fn build_tab_bar(&mut self, data: &TabBarRenderData) {
+        let (surface_w, surface_h) = self.gpu.size();
+        let to_ndc_x = |x: f32| (x / surface_w as f32) * 2.0 - 1.0;
+        let to_ndc_y = |y: f32| 1.0 - (y / surface_h as f32) * 2.0;
+
+        // Tab bar background
+        if let Some(ref bg) = data.background {
+            self.add_quad(
+                to_ndc_x(bg.x), to_ndc_y(bg.y),
+                to_ndc_x(bg.x + bg.width), to_ndc_y(bg.y + bg.height),
+                0.0, 0.0, 0.0, 0.0,
+                bg.color,
+                0.0,
+            );
+        }
+
+        // Each tab
+        for tab in &data.tabs {
+            // Tab background
+            self.add_quad(
+                to_ndc_x(tab.rect.x), to_ndc_y(tab.rect.y),
+                to_ndc_x(tab.rect.x + tab.rect.width), to_ndc_y(tab.rect.y + tab.rect.height),
+                0.0, 0.0, 0.0, 0.0,
+                tab.rect.color,
+                0.0,
+            );
+
+            // Tab title text (render each character)
+            self.render_text_at(
+                &tab.title,
+                tab.title_x,
+                tab.title_y + self.fonts.baseline(),
+                if tab.is_active {
+                    [1.0, 1.0, 1.0, 1.0]
+                } else {
+                    [0.7, 0.7, 0.7, 1.0]
+                },
+            );
+        }
+    }
+
+    /// Render text at a specific pixel position
+    fn render_text_at(&mut self, text: &str, start_x: f32, start_y: f32, color: [f32; 4]) {
+        let (surface_w, surface_h) = self.gpu.size();
+        let (cell_w, _cell_h) = self.fonts.cell_size();
+        let atlas_size = self.atlas.size();
+
+        let to_ndc_x = |x: f32| (x / surface_w as f32) * 2.0 - 1.0;
+        let to_ndc_y = |y: f32| 1.0 - (y / surface_h as f32) * 2.0;
+
+        let mut x = start_x;
+        for c in text.chars() {
+            let key = GlyphKey { c, style: FontStyle::Regular };
+            if let Some(entry) = self.atlas.get_or_insert(key, &self.fonts) {
+                if entry.width > 0 && entry.height > 0 {
+                    let glyph_x = x + entry.bearing_x as f32;
+                    let glyph_y = start_y - entry.bearing_y as f32 - entry.height as f32;
+
+                    let u0 = entry.x as f32 / atlas_size.0 as f32;
+                    let v0 = entry.y as f32 / atlas_size.1 as f32;
+                    let u1 = (entry.x + entry.width) as f32 / atlas_size.0 as f32;
+                    let v1 = (entry.y + entry.height) as f32 / atlas_size.1 as f32;
+
+                    self.add_quad(
+                        to_ndc_x(glyph_x), to_ndc_y(glyph_y),
+                        to_ndc_x(glyph_x + entry.width as f32), to_ndc_y(glyph_y + entry.height as f32),
+                        u0, v0, u1, v1,
+                        color,
+                        1.0,
+                    );
+                }
+            }
+            x += cell_w;
+        }
+    }
+
+    /// Render multiple panes at their positions
+    pub fn render_panes(&mut self, panes: &[PaneRenderInfo<'_>]) -> Result<(), GpuError> {
+        // Update atlas if dirty
+        if self.atlas.is_dirty() {
+            tracing::debug!("Uploading atlas texture");
+            self.gpu.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.atlas_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                self.atlas.data(),
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(self.atlas.size().0),
+                    rows_per_image: Some(self.atlas.size().1),
+                },
+                wgpu::Extent3d {
+                    width: self.atlas.size().0,
+                    height: self.atlas.size().1,
+                    depth_or_array_layers: 1,
+                },
+            );
+            self.atlas.clear_dirty();
+        }
+
+        // Build vertex data for all panes
+        self.vertices.clear();
+        self.indices.clear();
+
+        for (i, pane) in panes.iter().enumerate() {
+            // Build vertices for this pane at its position
+            self.build_vertices_at(pane.terminal, pane.x, pane.y, false);
+
+            // Draw a subtle border around non-focused panes (or highlight focused)
+            if panes.len() > 1 {
+                self.add_pane_border(pane.x, pane.y, pane.width, pane.height, pane.focused);
+            }
+
+            tracing::trace!(
+                "Pane {} at ({}, {}) size {}x{} focused={}",
+                i, pane.x, pane.y, pane.width, pane.height, pane.focused
+            );
+        }
+
+        tracing::debug!(
+            "Rendering {} panes: {} vertices, {} indices",
+            panes.len(),
+            self.vertices.len(),
+            self.indices.len()
+        );
+
+        // Upload vertex data
+        self.gpu.queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
+        self.gpu.queue.write_buffer(&self.index_buffer, 0, bytemuck::cast_slice(&self.indices));
+
+        // Get surface texture
+        let output = self.gpu.surface.get_current_texture()?;
+        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder = self.gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("render_encoder"),
+        });
+
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("terminal_render_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(self.colors.background.to_wgpu_color()),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            render_pass.set_pipeline(&self.pipeline);
+            render_pass.set_bind_group(0, &self.atlas_bind_group, &[]);
+            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            render_pass.draw_indexed(0..self.indices.len() as u32, 0, 0..1);
+        }
+
+        self.gpu.queue.submit(std::iter::once(encoder.finish()));
+        output.present();
+
+        self.gpu.device.poll(wgpu::Maintain::Wait);
+        self.gpu.sync_display();
+
+        Ok(())
+    }
+
+    /// Add a border around a pane
+    fn add_pane_border(&mut self, x: u32, y: u32, width: u32, height: u32, focused: bool) {
+        let (surface_w, surface_h) = self.gpu.size();
+        let to_ndc_x = |px: f32| (px / surface_w as f32) * 2.0 - 1.0;
+        let to_ndc_y = |py: f32| 1.0 - (py / surface_h as f32) * 2.0;
+
+        let border_width = 1.0;
+        let color = if focused {
+            [0.4, 0.6, 1.0, 1.0] // Blue-ish for focused
+        } else {
+            [0.3, 0.3, 0.3, 1.0] // Gray for unfocused
+        };
+
+        let x = x as f32;
+        let y = y as f32;
+        let w = width as f32;
+        let h = height as f32;
+
+        // Top border
+        self.add_quad(
+            to_ndc_x(x), to_ndc_y(y),
+            to_ndc_x(x + w), to_ndc_y(y + border_width),
+            0.0, 0.0, 0.0, 0.0,
+            color,
+            0.0,
+        );
+
+        // Bottom border
+        self.add_quad(
+            to_ndc_x(x), to_ndc_y(y + h - border_width),
+            to_ndc_x(x + w), to_ndc_y(y + h),
+            0.0, 0.0, 0.0, 0.0,
+            color,
+            0.0,
+        );
+
+        // Left border
+        self.add_quad(
+            to_ndc_x(x), to_ndc_y(y),
+            to_ndc_x(x + border_width), to_ndc_y(y + h),
+            0.0, 0.0, 0.0, 0.0,
+            color,
+            0.0,
+        );
+
+        // Right border
+        self.add_quad(
+            to_ndc_x(x + w - border_width), to_ndc_y(y),
+            to_ndc_x(x + w), to_ndc_y(y + h),
+            0.0, 0.0, 0.0, 0.0,
+            color,
+            0.0,
+        );
+    }
+
+    fn build_vertices(&mut self, terminal: &Terminal) {
+        self.build_vertices_at(terminal, 0, 0, true);
+    }
+
+    /// Build vertices for a terminal at a specific offset, optionally clearing first
+    fn build_vertices_at(&mut self, terminal: &Terminal, offset_x: u32, offset_y: u32, clear: bool) {
+        if clear {
+            self.vertices.clear();
+            self.indices.clear();
+        }
 
         let (cell_w, cell_h) = self.fonts.cell_size();
         let (surface_w, surface_h) = self.gpu.size();
@@ -335,8 +684,8 @@ impl Renderer {
                 for col in 0..cols {
                     let cell = &line[col];
 
-                    let x = col as f32 * cell_w;
-                    let y = row as f32 * cell_h;
+                    let x = offset_x as f32 + col as f32 * cell_w;
+                    let y = offset_y as f32 + row as f32 * cell_h;
 
                     // Background (if not default)
                     if cell.bg != CellColor::Default {
@@ -394,8 +743,8 @@ impl Renderer {
         // Render cursor
         let cursor = terminal.cursor();
         if terminal.modes().cursor_visible {
-            let x = cursor.col as f32 * cell_w;
-            let y = cursor.row as f32 * cell_h;
+            let x = offset_x as f32 + cursor.col as f32 * cell_w;
+            let y = offset_y as f32 + cursor.row as f32 * cell_h;
             let cursor_color = self.colors.cursor.to_rgba();
 
             self.add_quad(
