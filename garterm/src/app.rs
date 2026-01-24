@@ -1,9 +1,11 @@
 use crate::config::{Action, Config, KeybindSet, Modifiers as ConfigModifiers};
 use crate::input::{Clipboard, KeyboardHandler, MouseButton, MouseEvent, MouseHandler, Selection, SelectionMode};
+use crate::ipc::IpcServer;
 use crate::pty::{PtySize, ReceivedSignal, SignalHandler};
 use crate::render::{PaneRenderInfo, Renderer};
 use crate::ui::{Direction, TabManager};
 use anyhow::Result;
+use garterm_ipc::{Command, Response};
 use gartk_x11::{Connection, Window, WindowConfig};
 use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
 use std::os::fd::{AsRawFd, BorrowedFd};
@@ -16,6 +18,7 @@ pub struct App {
     renderer: Renderer,
     tabs: TabManager,
     signals: SignalHandler,
+    ipc: Option<IpcServer>,
     running: bool,
     wm_delete_window: xproto::Atom,
     clipboard: Clipboard,
@@ -129,11 +132,21 @@ impl App {
         let keybinds = config.keybindings();
         info!("Loaded {} keybindings", keybinds.iter().count());
 
+        // Start IPC server
+        let ipc = match IpcServer::new() {
+            Ok(server) => Some(server),
+            Err(e) => {
+                tracing::warn!("Failed to start IPC server: {}", e);
+                None
+            }
+        };
+
         Ok(Self {
             window,
             renderer,
             tabs,
             signals,
+            ipc,
             running: true,
             wm_delete_window,
             clipboard,
@@ -183,6 +196,9 @@ impl App {
             if x11_ready {
                 self.handle_x11_events()?;
             }
+
+            // Handle IPC commands
+            self.handle_ipc()?;
 
             // Read from ALL panes in the active tab (non-blocking)
             // This ensures unfocused panes still receive PTY data
@@ -508,15 +524,130 @@ impl App {
         // Reload colors
         self.renderer.set_colors(config.color_palette());
 
+        // Reload keybindings
+        self.keybinds = config.keybindings();
+        info!("Reloaded {} keybindings", self.keybinds.iter().count());
+
         // Update shell for new panes
         self.shell = config.general.shell.clone();
 
         // Force redraw
-        if let Some(pane) = self.tabs.focused_pane_mut() {
-            pane.mark_dirty();
+        self.tabs.mark_all_dirty();
+
+        Ok(())
+    }
+
+    /// Handle IPC commands from gartermctl
+    fn handle_ipc(&mut self) -> Result<()> {
+        let Some(ref ipc) = self.ipc else { return Ok(()) };
+
+        for (stream, cmd) in ipc.poll() {
+            let response = self.execute_ipc_command(&cmd);
+            IpcServer::send_response(stream, response);
         }
 
         Ok(())
+    }
+
+    /// Execute an IPC command and return the response
+    fn execute_ipc_command(&mut self, cmd: &Command) -> Response {
+        match cmd {
+            Command::Reload => {
+                match self.reload_config() {
+                    Ok(()) => Response::ok(),
+                    Err(e) => Response::error(format!("Failed to reload: {}", e)),
+                }
+            }
+            Command::NewTab { cwd } => {
+                let cwd_path = cwd.as_ref().map(|s| std::path::PathBuf::from(s));
+                match self.tabs.new_tab(self.width, self.height, cwd_path.as_deref()) {
+                    Ok(_) => {
+                        let _ = self.tabs.relayout(self.width, self.height);
+                        self.tabs.mark_all_dirty();
+                        Response::ok()
+                    }
+                    Err(e) => Response::error(format!("Failed to create tab: {}", e)),
+                }
+            }
+            Command::CloseTab => {
+                self.tabs.close_tab();
+                let _ = self.tabs.relayout(self.width, self.height);
+                self.tabs.mark_all_dirty();
+                Response::ok()
+            }
+            Command::NextTab => {
+                self.tabs.next_tab();
+                self.tabs.mark_all_dirty();
+                Response::ok()
+            }
+            Command::PrevTab => {
+                self.tabs.prev_tab();
+                self.tabs.mark_all_dirty();
+                Response::ok()
+            }
+            Command::SwitchTab { index } => {
+                self.tabs.switch_to_tab(*index);
+                self.tabs.mark_all_dirty();
+                Response::ok()
+            }
+            Command::Split { direction } => {
+                let result = match direction.to_lowercase().as_str() {
+                    "horizontal" | "h" => self.tabs.split_horizontal(self.cwd.as_deref()),
+                    "vertical" | "v" => self.tabs.split_vertical(self.cwd.as_deref()),
+                    _ => return Response::error(format!("Invalid direction: {}", direction)),
+                };
+                match result {
+                    Ok(_) => {
+                        let _ = self.tabs.relayout(self.width, self.height);
+                        self.tabs.mark_all_dirty();
+                        Response::ok()
+                    }
+                    Err(e) => Response::error(format!("Failed to split: {}", e)),
+                }
+            }
+            Command::ClosePane => {
+                if self.tabs.close_pane() {
+                    let _ = self.tabs.relayout(self.width, self.height);
+                    self.tabs.mark_all_dirty();
+                }
+                Response::ok()
+            }
+            Command::FocusPaneDirection { direction } => {
+                let dir = match direction.to_lowercase().as_str() {
+                    "up" => Direction::Up,
+                    "down" => Direction::Down,
+                    "left" => Direction::Left,
+                    "right" => Direction::Right,
+                    _ => return Response::error(format!("Invalid direction: {}", direction)),
+                };
+                self.tabs.focus_direction(dir, self.width, self.height);
+                self.tabs.mark_all_dirty();
+                Response::ok()
+            }
+            Command::SendText { text } => {
+                if let Some(pane) = self.tabs.focused_pane_mut() {
+                    if let Err(e) = pane.write_pty(text.as_bytes()) {
+                        return Response::error(format!("Failed to send text: {}", e));
+                    }
+                }
+                Response::ok()
+            }
+            Command::GetInfo => {
+                let info = serde_json::json!({
+                    "tabs": self.tabs.tab_count(),
+                    "width": self.width,
+                    "height": self.height,
+                });
+                Response::ok_with_data(info)
+            }
+            Command::Quit => {
+                self.running = false;
+                Response::ok()
+            }
+            Command::NewWindow { .. } | Command::ResizePane { .. } => {
+                Response::error("Not implemented")
+            }
+        }
     }
 
     fn handle_x11_events(&mut self) -> Result<()> {

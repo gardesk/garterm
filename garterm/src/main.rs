@@ -8,6 +8,7 @@ use tracing_subscriber::EnvFilter;
 mod app;
 mod config;
 mod input;
+mod ipc;
 mod pty;
 mod render;
 mod terminal;
