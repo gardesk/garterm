@@ -1,12 +1,12 @@
 //! Terminal configuration system
 //!
-//! Supports TOML (primary) and Lua (gar integration) configuration with sensible defaults.
+//! Supports Lua (gar suite integration) and TOML configuration with sensible defaults.
 //!
 //! # Configuration Locations
 //!
 //! 1. CLI flags (highest priority)
-//! 2. `~/.config/garterm/config.toml` (primary config file)
-//! 3. `gar.terminal` table in `~/.config/gar/init.lua` (gar suite integration)
+//! 2. `gar.terminal` table in `~/.config/gar/init.lua` (gar suite integration)
+//! 3. `~/.config/garterm/config.toml` (standalone config)
 //! 4. Built-in defaults
 //!
 //! # Example TOML
@@ -487,8 +487,21 @@ impl ConfigLoader {
     }
 
     /// Load configuration with fallback chain
+    ///
+    /// Priority order (for gar suite integration):
+    /// 1. Lua (gar.terminal table) - primary for gar users
+    /// 2. TOML - standalone garterm config
+    /// 3. Defaults
     pub fn load(&self) -> Config {
-        // Try TOML first
+        // Try Lua first (gar.terminal table) for gar suite integration
+        if self.lua_path.exists() {
+            if let Some(config) = self.try_load_lua() {
+                tracing::info!("Loaded config from gar.terminal in {}", self.lua_path.display());
+                return config;
+            }
+        }
+
+        // Try TOML (standalone garterm config)
         if self.toml_path.exists() {
             match Config::load_from_file(&self.toml_path) {
                 Ok(config) => {
@@ -499,14 +512,6 @@ impl ConfigLoader {
                     tracing::error!("Config error: {}", e);
                     // Fall through to defaults
                 }
-            }
-        }
-
-        // Try Lua (gar.terminal table) - TODO: implement in lua.rs
-        if self.lua_path.exists() {
-            if let Some(config) = self.try_load_lua() {
-                tracing::info!("Loaded config from gar.terminal in {}", self.lua_path.display());
-                return config;
             }
         }
 
