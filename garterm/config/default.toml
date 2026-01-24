@@ -126,8 +126,21 @@ term = "xterm-256color"
 #
 preset = "tokyo-night"
 
-# Or define custom colors (uncomment to override preset):
+# Color overrides: Customize individual colors on top of any preset.
+# Only specify the colors you want to change - the rest come from the preset.
 #
+# Example: Use Tokyo Night but with a pure black background:
+#   preset = "tokyo-night"
+#   background = "#000000"
+#
+# Example: Gruvbox with custom red for errors:
+#   preset = "gruvbox-dark"
+#   red = "#ff0000"
+#   bright_red = "#ff5555"
+#
+# Full color reference (uncomment individual colors to override):
+#
+# # UI colors
 # foreground = "#c0caf5"
 # background = "#1a1b26"
 # cursor = "#c0caf5"
@@ -135,7 +148,7 @@ preset = "tokyo-night"
 # selection = "#33467c"
 # selection_text = "#c0caf5"
 #
-# # ANSI colors (0-7: normal, 8-15: bright)
+# # ANSI colors (0-7: normal)
 # black = "#15161e"
 # red = "#f7768e"
 # green = "#9ece6a"
@@ -145,6 +158,7 @@ preset = "tokyo-night"
 # cyan = "#7dcfff"
 # white = "#a9b1d6"
 #
+# # ANSI colors (8-15: bright)
 # bright_black = "#414868"
 # bright_red = "#f7768e"
 # bright_green = "#9ece6a"
@@ -257,36 +271,64 @@ inactive_fg = [0.7, 0.7, 0.7, 1.0]
 #               reset_font_size (zoom_reset)
 #   Search:     search_forward, search_backward
 #   Misc:       reload_config, toggle_fullscreen, reset_terminal, clear_scrollback
+#   Resize:     resize_up, resize_down, resize_left, resize_right
 #   Disable:    none (disables a default binding)
 #
 [keybinds]
 # Default bindings (uncomment to customize):
 #
+# --- Clipboard ---
 # "ctrl+shift+c" = "copy"
 # "ctrl+shift+v" = "paste"
-# "ctrl+shift+t" = "new_tab"
-# "ctrl+shift+w" = "close_pane"
-# "ctrl+shift+h" = "split_horizontal"
-# "ctrl+shift+e" = "split_vertical"
-# "ctrl+shift+Up" = "focus_up"
-# "ctrl+shift+Down" = "focus_down"
-# "ctrl+shift+Left" = "focus_left"
-# "ctrl+shift+Right" = "focus_right"
+#
+# --- Tabs ---
+# "alt+t" = "new_tab"
+# "alt+w" = "close_pane"
+# "alt+]" = "next_tab"              # Also: Alt+1-9 for direct tab switching
+# "alt+[" = "prev_tab"
+#
+# --- Pane Splits ---
+# "alt+h" = "split_horizontal"
+# "alt+v" = "split_vertical"
+#
+# --- Pane Focus Navigation ---
+# "alt+Up" = "focus_up"
+# "alt+Down" = "focus_down"
+# "alt+Left" = "focus_left"
+# "alt+Right" = "focus_right"
+#
+# --- Pane Resize ---
+# "ctrl+shift+alt+Up" = "resize_up"
+# "ctrl+shift+alt+Down" = "resize_down"
+# "ctrl+shift+alt+Left" = "resize_left"
+# "ctrl+shift+alt+Right" = "resize_right"
+#
+# --- Scrollback ---
 # "shift+Page_Up" = "scroll_page_up"
 # "shift+Page_Down" = "scroll_page_down"
 # "ctrl+shift+Home" = "scroll_to_top"
 # "ctrl+shift+End" = "scroll_to_bottom"
+#
+# --- Font Size ---
 # "ctrl+shift+equal" = "increase_font_size"
 # "ctrl+shift+plus" = "increase_font_size"
 # "ctrl+shift+minus" = "decrease_font_size"
 # "ctrl+shift+0" = "reset_font_size"
-# "ctrl+shift+f" = "search_forward"
-# "ctrl+shift+r" = "reload_config"
 #
-# Tab switching (1-9):
-# "ctrl+shift+1" = "tab_1"
-# "ctrl+shift+2" = "tab_2"
-# ...
+# --- Search ---
+# "ctrl+shift+f" = "search_forward"
+# In search mode: n/N for next/prev match, Ctrl+I for case toggle, Escape to cancel
+#
+# --- Terminal Control ---
+# "ctrl+shift+r" = "reload_config"
+# "F11" = "toggle_fullscreen"
+# "ctrl+shift+Delete" = "reset_terminal"
+# "ctrl+shift+k" = "clear_scrollback"
+#
+# --- Tab Switching (1-9) ---
+# "alt+1" = "tab_1"
+# "alt+2" = "tab_2"
+# ... (Alt+1-9 are built-in, not configurable)
 
 #==============================================================================
 # GAR INTEGRATION (Lua)

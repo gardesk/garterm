@@ -29,11 +29,13 @@ gar.terminal = {
     },
 
     -- Color scheme (see config.toml for available presets)
+    -- You can override individual colors on top of any preset:
     colors = {
         preset = "tokyo-night",
-        -- Or override individual colors:
-        -- foreground = "#c0caf5",
-        -- background = "#1a1b26",
+        -- Override just the colors you want to change:
+        -- background = "#000000",        -- Pure black background
+        -- cursor = "#ff5555",            -- Red cursor
+        -- red = "#ff0000",               -- Brighter red for errors
     },
 
     -- Terminal behavior
@@ -209,6 +211,21 @@ gar.terminal.keybinds = {
     ["ctrl+shift+n"] = "new_tab",
     ["ctrl+shift+h"] = "split_horizontal",
     ["ctrl+shift+v"] = "split_vertical",
+
+    -- Terminal control actions
+    -- ["F11"] = "toggle_fullscreen",       -- (default)
+    -- ["ctrl+shift+r"] = "reload_config",  -- (default)
+    -- ["ctrl+shift+Delete"] = "reset_terminal",
+    -- ["ctrl+shift+k"] = "clear_scrollback",
+
+    -- Pane resize (default: Ctrl+Shift+Alt+Arrow)
+    -- ["ctrl+shift+alt+Up"] = "resize_up",
+    -- ["ctrl+shift+alt+Down"] = "resize_down",
+    -- ["ctrl+shift+alt+Left"] = "resize_left",
+    -- ["ctrl+shift+alt+Right"] = "resize_right",
+
+    -- Search (default: Ctrl+Shift+F to start)
+    -- In search mode: n/N for next/prev, Ctrl+I for case toggle, Escape to cancel
 
     -- Disable a default binding
     -- ["ctrl+shift+f"] = "none",
