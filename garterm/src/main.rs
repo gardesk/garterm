@@ -6,10 +6,13 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 mod app;
+mod config;
 mod input;
 mod pty;
 mod render;
 mod terminal;
+
+pub use config::Config;
 
 #[derive(Parser)]
 #[command(name = "garterm")]
@@ -27,6 +30,10 @@ struct Cli {
     /// Window title
     #[arg(long)]
     title: Option<String>,
+
+    /// Use VSync-based rendering (may not work on Asahi Linux)
+    #[arg(long)]
+    vsync: bool,
 }
 
 fn main() -> Result<()> {
@@ -43,6 +50,7 @@ fn main() -> Result<()> {
 
     info!("garterm starting");
 
+    // Build configuration from CLI args
     let shell = cli
         .command
         .or_else(|| std::env::var("SHELL").ok())
@@ -53,7 +61,18 @@ fn main() -> Result<()> {
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::current_dir().ok());
 
+    let config = Config::new()
+        .with_shell(shell)
+        .with_working_directory(cwd)
+        .with_vsync(cli.vsync);
+
+    if config.vsync {
+        info!("VSync mode enabled (dirty-flag rendering)");
+    } else {
+        info!("Continuous rendering mode (60fps timer-based)");
+    }
+
     // Create and run the application
-    let mut app = pollster::block_on(app::App::new(&shell, cwd.as_deref()))?;
+    let mut app = pollster::block_on(app::App::new(config))?;
     app.run()
 }

@@ -1,3 +1,4 @@
+use crate::config::Config;
 use crate::input::{Clipboard, KeyboardHandler, MouseButton, MouseEvent, MouseHandler, Selection, SelectionMode};
 use crate::pty::{Pty, PtySize, ReceivedSignal, SignalHandler};
 use crate::render::Renderer;
@@ -24,11 +25,13 @@ pub struct App {
     last_click: std::time::Instant,
     /// Click count for double/triple click
     click_count: u32,
+    /// Use VSync-based rendering (dirty flag only)
+    vsync: bool,
 }
 
 impl App {
     /// Create a new terminal application
-    pub async fn new(shell: &str, cwd: Option<&std::path::Path>) -> Result<Self> {
+    pub async fn new(config: Config) -> Result<Self> {
         // Connect to X11
         let conn = Connection::connect(None)?;
 
@@ -36,7 +39,7 @@ impl App {
         let wm_delete_window = conn.intern_atom("WM_DELETE_WINDOW", false)?;
 
         // Calculate initial window size
-        let font_size = 14.0;
+        let font_size = config.font_size;
         let cols = 80;
         let rows = 24;
 
@@ -102,7 +105,11 @@ impl App {
             pixel_width: actual_width as u16,
             pixel_height: actual_height as u16,
         };
-        let pty = Pty::spawn(shell, pty_size, cwd)?;
+        let pty = Pty::spawn(
+            &config.shell,
+            pty_size,
+            config.working_directory.as_deref(),
+        )?;
 
         // Set up signal handler
         let signals = SignalHandler::new()?;
@@ -122,6 +129,7 @@ impl App {
             selection: Selection::new(),
             last_click: std::time::Instant::now(),
             click_count: 0,
+            vsync: config.vsync,
         })
     }
 
@@ -198,20 +206,21 @@ impl App {
                 self.running = false;
             }
 
-            // Render every frame using timer-based 60fps pacing.
+            // Rendering strategy depends on vsync setting:
             //
-            // Why continuous rendering is required (not a hack):
-            // - Asahi Linux lacks VBlank interrupt support, so VSync doesn't work
-            // - wgpu doesn't support X11 damage region reporting (GitHub #682)
-            // - Compositors can't detect when wgpu has new content
-            // - A single render after PTY data isn't enough - compositor may miss it
-            // - Other wgpu terminals (alacritty) have the same limitation on Asahi
+            // vsync=false (default): Render every frame at ~60fps.
+            //   Required on Asahi Linux where VBlank interrupts don't work and
+            //   wgpu can't report X11 damage regions. Compositor needs continuous
+            //   frame submission to display content.
             //
-            // The 16ms poll timeout provides timer-based frame pacing at ~60fps.
-            // This is the correct approach for this hardware/driver combination.
-            let _ = self.terminal.take_dirty();
-            self.renderer.render(&self.terminal)?;
-            self.window.connection().flush()?;
+            // vsync=true: Only render when terminal content changes.
+            //   More efficient but requires proper VSync/damage support.
+            //   May cause display issues on Asahi Linux.
+            let dirty = self.terminal.take_dirty();
+            if !self.vsync || dirty {
+                self.renderer.render(&self.terminal)?;
+                self.window.connection().flush()?;
+            }
         }
 
         info!("garterm exiting");
