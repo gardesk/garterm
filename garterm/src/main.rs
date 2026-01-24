@@ -4,6 +4,7 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 mod pty;
+mod terminal;
 
 #[derive(Parser)]
 #[command(name = "garterm")]

@@ -13,6 +13,8 @@ path = "src/main.rs"
 [dependencies]
 garterm-ipc.workspace = true
 
+vte.workspace = true
+unicode-width.workspace = true
 nix.workspace = true
 clap.workspace = true
 tracing.workspace = true
