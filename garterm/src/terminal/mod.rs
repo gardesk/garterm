@@ -166,6 +166,31 @@ impl Terminal {
         self.cwd.as_deref()
     }
 
+    /// Scroll viewport up into scrollback history
+    pub fn scroll_up(&mut self, lines: usize) {
+        self.grid.scroll_viewport_up(lines);
+        self.dirty = true;
+    }
+
+    /// Scroll viewport down towards current content
+    pub fn scroll_down(&mut self, lines: usize) {
+        self.grid.scroll_viewport_down(lines);
+        self.dirty = true;
+    }
+
+    /// Scroll viewport to bottom (current content)
+    pub fn reset_viewport(&mut self) {
+        if !self.grid.is_at_bottom() {
+            self.grid.reset_viewport();
+            self.dirty = true;
+        }
+    }
+
+    /// Check if viewport is scrolled back (not at bottom)
+    pub fn is_scrolled(&self) -> bool {
+        !self.grid.is_at_bottom()
+    }
+
     /// Queue a response to send to PTY
     fn queue_response(&mut self, response: Vec<u8>) {
         self.responses.push_back(response);
@@ -232,6 +257,9 @@ impl Terminal {
 
     /// Process input bytes from PTY
     pub fn input(&mut self, bytes: &[u8]) {
+        // Auto-scroll to bottom when new output arrives
+        self.grid.reset_viewport();
+
         // Take parser temporarily to avoid borrow conflict
         let mut parser = std::mem::take(&mut self.parser);
         for byte in bytes {

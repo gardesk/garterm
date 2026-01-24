@@ -475,10 +475,12 @@ impl App {
                 self.clipboard.paste_clipboard(self.window.connection())?;
             }
             MouseButton::WheelUp => {
-                // Scroll up - TODO: scrollback navigation
+                // Scroll up into history (3 lines per tick)
+                self.terminal.scroll_up(3);
             }
             MouseButton::WheelDown => {
-                // Scroll down - TODO: scrollback navigation
+                // Scroll down towards current (3 lines per tick)
+                self.terminal.scroll_down(3);
             }
             MouseButton::None => {}
         }
