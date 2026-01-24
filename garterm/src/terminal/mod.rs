@@ -508,6 +508,8 @@ impl Terminal {
         }
         std::mem::swap(&mut self.grid, self.alt_grid.as_mut().unwrap());
         self.grid.clear();
+        // Reset viewport to bottom
+        self.grid.reset_viewport();
         self.dirty = true;
     }
 
@@ -515,6 +517,8 @@ impl Terminal {
     fn switch_to_primary_screen(&mut self) {
         if let Some(ref mut alt) = self.alt_grid {
             std::mem::swap(&mut self.grid, alt);
+            // Reset viewport to bottom (current content)
+            self.grid.reset_viewport();
             self.dirty = true;
         }
     }
@@ -875,20 +879,24 @@ impl vte::Perform for Performer<'_> {
             ('h', [b'?']) => {
                 for param in params.iter() {
                     if let Some(&mode) = param.first() {
-                        self.term.modes.set_dec_mode(mode, true);
-                        if mode == 1049 || mode == 47 || mode == 1047 {
+                        // Switch to alt screen only if not already on alt screen
+                        // This prevents double-entry from corrupting the primary buffer
+                        if (mode == 1049 || mode == 47 || mode == 1047) && !self.term.modes.alt_screen {
                             self.term.switch_to_alt_screen();
                         }
+                        self.term.modes.set_dec_mode(mode, true);
                     }
                 }
             }
             ('l', [b'?']) => {
                 for param in params.iter() {
                     if let Some(&mode) = param.first() {
-                        self.term.modes.set_dec_mode(mode, false);
-                        if mode == 1049 || mode == 47 || mode == 1047 {
+                        // Switch to primary screen only if currently on alt screen
+                        // This prevents double-exit issues
+                        if (mode == 1049 || mode == 47 || mode == 1047) && self.term.modes.alt_screen {
                             self.term.switch_to_primary_screen();
                         }
+                        self.term.modes.set_dec_mode(mode, false);
                     }
                 }
             }
