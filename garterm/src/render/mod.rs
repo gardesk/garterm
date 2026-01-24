@@ -60,6 +60,36 @@ pub struct PaneRenderInfo<'a> {
     pub focused: bool,
     /// Optional selection bounds (only for focused pane)
     pub selection: Option<SelectionBounds>,
+    /// Optional search info for highlighting matches
+    pub search: Option<SearchRenderInfo<'a>>,
+}
+
+/// Search rendering information for highlighting in pane
+pub struct SearchRenderInfo<'a> {
+    /// Search query to display
+    pub query: &'a str,
+    /// All matches to highlight (visible row, col_start, col_end)
+    pub matches: &'a [(usize, usize, usize)],
+    /// Current match index to highlight specially
+    pub current_match_idx: Option<usize>,
+    /// Match count text (e.g., "3/15")
+    pub match_count: &'a str,
+    /// Whether search input is active
+    pub active: bool,
+    /// Case insensitive flag
+    pub case_insensitive: bool,
+}
+
+/// Search overlay for the search bar at the bottom of the screen
+pub struct SearchOverlay<'a> {
+    /// Current search query
+    pub query: &'a str,
+    /// Match count text (e.g., "3/15" or "No matches")
+    pub match_count: &'a str,
+    /// Whether search input is active (cursor visible)
+    pub active: bool,
+    /// Case insensitive mode
+    pub case_insensitive: bool,
 }
 
 /// Vertex for rendering quads (glyphs and backgrounds)
@@ -376,11 +406,21 @@ impl Renderer {
         Ok(())
     }
 
-    /// Render the full scene: tab bar + all panes
+    /// Render the full scene: tab bar + all panes + optional search overlay
     pub fn render_scene(
         &mut self,
         tab_bar: &TabBarRenderData,
         panes: &[PaneRenderInfo<'_>],
+    ) -> Result<(), GpuError> {
+        self.render_scene_with_search(tab_bar, panes, None)
+    }
+
+    /// Render the full scene with optional search overlay
+    pub fn render_scene_with_search(
+        &mut self,
+        tab_bar: &TabBarRenderData,
+        panes: &[PaneRenderInfo<'_>],
+        search: Option<&SearchOverlay>,
     ) -> Result<(), GpuError> {
         // Update atlas if dirty
         if self.atlas.is_dirty() {
@@ -432,6 +472,11 @@ impl Renderer {
                 "Pane {} at ({}, {}) size {}x{} focused={}",
                 i, pane.x, pane.y, pane.width, pane.height, pane.focused
             );
+        }
+
+        // Build search overlay if active
+        if let Some(search) = search {
+            self.build_search_overlay(search);
         }
 
         tracing::debug!(
@@ -557,6 +602,72 @@ impl Renderer {
         }
     }
 
+    /// Build search overlay bar at the bottom of the screen
+    fn build_search_overlay(&mut self, search: &SearchOverlay) {
+        let (surface_w, surface_h) = self.gpu.size();
+        let (cell_w, cell_h) = self.fonts.cell_size();
+        let to_ndc_x = |x: f32| (x / surface_w as f32) * 2.0 - 1.0;
+        let to_ndc_y = |y: f32| 1.0 - (y / surface_h as f32) * 2.0;
+
+        // Bar height: one cell height + padding
+        let bar_height = cell_h + 8.0;
+        let bar_y = surface_h as f32 - bar_height;
+
+        // Background (dark semi-transparent bar)
+        let bg_color = [0.15, 0.15, 0.15, 0.95];
+        self.add_quad(
+            to_ndc_x(0.0), to_ndc_y(bar_y),
+            to_ndc_x(surface_w as f32), to_ndc_y(surface_h as f32),
+            0.0, 0.0, 0.0, 0.0,
+            bg_color,
+            0.0,
+        );
+
+        // Border at top of bar
+        let border_color = [0.4, 0.6, 1.0, 1.0];
+        self.add_quad(
+            to_ndc_x(0.0), to_ndc_y(bar_y),
+            to_ndc_x(surface_w as f32), to_ndc_y(bar_y + 1.0),
+            0.0, 0.0, 0.0, 0.0,
+            border_color,
+            0.0,
+        );
+
+        // Text position
+        let text_y = bar_y + 4.0 + cell_h; // Baseline position
+        let mut x = 8.0;
+
+        // "Search: " prefix
+        let prefix = if search.case_insensitive { "Search (i): " } else { "Search: " };
+        let prefix_color = [0.7, 0.7, 0.7, 1.0];
+        self.render_text_at(prefix, x, text_y, prefix_color);
+        x += prefix.len() as f32 * cell_w;
+
+        // Query text
+        let query_color = [1.0, 1.0, 1.0, 1.0];
+        self.render_text_at(search.query, x, text_y, query_color);
+        x += search.query.len() as f32 * cell_w;
+
+        // Cursor (blinking block when active)
+        if search.active {
+            let cursor_color = [0.8, 0.8, 0.8, 0.8];
+            self.add_quad(
+                to_ndc_x(x), to_ndc_y(bar_y + 4.0),
+                to_ndc_x(x + cell_w), to_ndc_y(bar_y + 4.0 + cell_h),
+                0.0, 0.0, 0.0, 0.0,
+                cursor_color,
+                0.0,
+            );
+        }
+
+        // Match count on the right
+        if !search.match_count.is_empty() {
+            let count_color = [0.6, 0.8, 0.6, 1.0];
+            let count_x = surface_w as f32 - (search.match_count.len() as f32 * cell_w) - 8.0;
+            self.render_text_at(search.match_count, count_x, text_y, count_color);
+        }
+    }
+
     /// Render multiple panes at their positions
     pub fn render_panes(&mut self, panes: &[PaneRenderInfo<'_>]) -> Result<(), GpuError> {
         // Update atlas if dirty
@@ -601,6 +712,11 @@ impl Renderer {
             // Draw a subtle border around non-focused panes (or highlight focused)
             if panes.len() > 1 {
                 self.add_pane_border(pane.x, pane.y, pane.width, pane.height, pane.focused);
+            }
+
+            // Show scroll indicator when scrolled back from bottom
+            if pane.terminal.is_scrolled() {
+                self.add_scroll_indicator(pane.x, pane.y, pane.width, pane.height);
             }
 
             tracing::trace!(
@@ -715,6 +831,58 @@ impl Renderer {
         );
     }
 
+    /// Add a visual indicator when the terminal is scrolled up from the bottom.
+    /// Shows a small down arrow or bar at the bottom-right to indicate more content below.
+    fn add_scroll_indicator(&mut self, x: u32, y: u32, width: u32, height: u32) {
+        let (surface_w, surface_h) = self.gpu.size();
+        let to_ndc_x = |px: f32| (px / surface_w as f32) * 2.0 - 1.0;
+        let to_ndc_y = |py: f32| 1.0 - (py / surface_h as f32) * 2.0;
+
+        // Indicator: small rounded rect at bottom-right corner
+        // Use a bright color to make it noticeable
+        let indicator_color = [0.8, 0.8, 0.3, 0.9]; // Yellow-ish
+
+        let indicator_width = 24.0;
+        let indicator_height = 6.0;
+        let margin = 8.0;
+
+        let ix = x as f32 + width as f32 - indicator_width - margin;
+        let iy = y as f32 + height as f32 - indicator_height - margin;
+
+        // Draw the indicator bar
+        self.add_quad(
+            to_ndc_x(ix), to_ndc_y(iy),
+            to_ndc_x(ix + indicator_width), to_ndc_y(iy + indicator_height),
+            0.0, 0.0, 0.0, 0.0,
+            indicator_color,
+            0.0,
+        );
+
+        // Draw a small down arrow (triangle) below/next to the bar
+        // Using two small quads to form an arrow shape
+        let arrow_size = 8.0;
+        let arrow_x = ix + (indicator_width - arrow_size) / 2.0;
+        let arrow_y = iy + indicator_height + 2.0;
+
+        // Left half of arrow
+        self.add_quad(
+            to_ndc_x(arrow_x), to_ndc_y(arrow_y),
+            to_ndc_x(arrow_x + arrow_size / 2.0), to_ndc_y(arrow_y + arrow_size / 2.0),
+            0.0, 0.0, 0.0, 0.0,
+            indicator_color,
+            0.0,
+        );
+
+        // Right half of arrow
+        self.add_quad(
+            to_ndc_x(arrow_x + arrow_size / 2.0), to_ndc_y(arrow_y),
+            to_ndc_x(arrow_x + arrow_size), to_ndc_y(arrow_y + arrow_size / 2.0),
+            0.0, 0.0, 0.0, 0.0,
+            indicator_color,
+            0.0,
+        );
+    }
+
     fn build_vertices(&mut self, terminal: &Terminal) {
         self.build_vertices_with_selection(terminal, 0, 0, true, None);
     }
@@ -825,20 +993,37 @@ impl Renderer {
             }
         }
 
-        // Render cursor
+        // Render cursor at correct viewport position
+        // When scrolled, the cursor stays at its position in the active display,
+        // but we need to offset it by the number of scrollback lines being shown
         let cursor = terminal.cursor();
         if terminal.modes().cursor_visible {
-            let x = offset_x as f32 + cursor.col as f32 * cell_w;
-            let y = offset_y as f32 + cursor.row as f32 * cell_h;
-            let cursor_color = self.colors.cursor.to_rgba();
+            let grid = terminal.grid();
+            let scroll_offset = grid.scroll_offset();
+            let scrollback_len = grid.scrollback_len();
+            let rows = terminal.rows();
 
-            self.add_quad(
-                to_ndc_x(x), to_ndc_y(y),
-                to_ndc_x(x + cell_w), to_ndc_y(y + cell_h),
-                0.0, 0.0, 0.0, 0.0,
-                cursor_color,
-                0.0,
-            );
+            // Calculate how many scrollback lines are visible in the viewport
+            let scrollback_visible = scroll_offset.min(scrollback_len);
+
+            // The cursor's visual row in the viewport
+            // Active lines start after scrollback_visible lines
+            let cursor_visual_row = scrollback_visible + cursor.row;
+
+            // Only render if cursor is within the visible viewport
+            if cursor_visual_row < rows {
+                let x = offset_x as f32 + cursor.col as f32 * cell_w;
+                let y = offset_y as f32 + cursor_visual_row as f32 * cell_h;
+                let cursor_color = self.colors.cursor.to_rgba();
+
+                self.add_quad(
+                    to_ndc_x(x), to_ndc_y(y),
+                    to_ndc_x(x + cell_w), to_ndc_y(y + cell_h),
+                    0.0, 0.0, 0.0, 0.0,
+                    cursor_color,
+                    0.0,
+                );
+            }
         }
     }
 
