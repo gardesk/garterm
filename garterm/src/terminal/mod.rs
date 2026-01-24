@@ -399,8 +399,8 @@ impl Terminal {
                 }
             }
             2 => {
-                // Erase entire screen
-                self.grid.clear();
+                // Erase entire screen (save to scrollback first, like modern terminals)
+                self.grid.clear_saving_scrollback();
             }
             3 => {
                 // Erase entire screen + scrollback

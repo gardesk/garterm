@@ -23,6 +23,8 @@ pub enum FontStyle {
 /// Font cache for terminal rendering
 pub struct FontCache {
     fonts: HashMap<FontStyle, Arc<Font>>,
+    /// Fallback fonts for missing glyphs (symbols, icons, etc.)
+    fallback_fonts: Vec<Arc<Font>>,
     size: f32,
     cell_width: f32,
     cell_height: f32,
@@ -61,6 +63,9 @@ impl FontCache {
         ])
         .unwrap_or_else(|_| (*bold).clone()));
 
+        // Load fallback fonts for symbols, icons, box drawing, etc.
+        let fallback_fonts = Self::load_fallback_fonts();
+
         // Calculate cell metrics from regular font
         let metrics = regular.metrics('M', size);
         let line_metrics = regular.horizontal_line_metrics(size);
@@ -79,11 +84,65 @@ impl FontCache {
 
         Ok(Self {
             fonts,
+            fallback_fonts,
             size,
             cell_width,
             cell_height,
             baseline,
         })
+    }
+
+    /// Load fallback fonts for symbols and missing glyphs
+    fn load_fallback_fonts() -> Vec<Arc<Font>> {
+        // Build fallback paths including user fonts
+        let mut fallback_paths: Vec<std::path::PathBuf> = Vec::new();
+
+        // Add user font directories first (higher priority)
+        if let Some(home) = dirs::home_dir() {
+            let user_fonts = home.join(".local/share/fonts");
+            fallback_paths.push(user_fonts.join("NerdFontsSymbols/SymbolsNerdFontMono-Regular.ttf"));
+            fallback_paths.push(user_fonts.join("NerdFontsSymbols/SymbolsNerdFont-Regular.ttf"));
+        }
+
+        // System paths
+        let system_paths = [
+            // Nerd Fonts (icons, powerline symbols)
+            "/usr/share/fonts/TTF/SymbolsNerdFont-Regular.ttf",
+            "/usr/share/fonts/TTF/SymbolsNerdFontMono-Regular.ttf",
+            // Noto fonts (broad Unicode coverage)
+            "/usr/share/fonts/google-noto/NotoSansSymbols2-Regular.ttf",
+            "/usr/share/fonts/google-noto-vf/NotoSansSymbols[wght].ttf",
+            // Symbola (excellent Unicode coverage)
+            "/usr/share/fonts/gdouros-symbola/Symbola.ttf",
+            // DejaVu (good Unicode coverage including box drawing)
+            "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            // Noto Sans (general fallback)
+            "/usr/share/fonts/google-noto/NotoSans-Regular.ttf",
+            // Noto Emoji
+            "/usr/share/fonts/google-noto-emoji-fonts/NotoEmoji-Regular.ttf",
+            "/usr/share/fonts/google-noto-color-emoji-fonts/NotoColorEmoji.ttf",
+        ];
+        fallback_paths.extend(system_paths.iter().map(std::path::PathBuf::from));
+
+        let mut fallbacks = Vec::new();
+        for path in &fallback_paths {
+            if let Ok(data) = std::fs::read(path) {
+                if let Ok(font) = Font::from_bytes(data, FontSettings::default()) {
+                    tracing::debug!("Loaded fallback font: {}", path.display());
+                    fallbacks.push(Arc::new(font));
+                }
+            }
+        }
+
+        if fallbacks.is_empty() {
+            tracing::warn!("No fallback fonts loaded - some symbols may not render");
+        } else {
+            tracing::info!("Loaded {} fallback fonts", fallbacks.len());
+        }
+
+        fallbacks
     }
 
     fn load_font(paths: &[&str]) -> Result<Font, FontError> {
@@ -120,9 +179,32 @@ impl FontCache {
         })
     }
 
-    /// Rasterize a character
+    /// Rasterize a character, using fallback fonts if needed
     pub fn rasterize(&self, c: char, style: FontStyle) -> (fontdue::Metrics, Vec<u8>) {
-        let font = self.font(style);
-        font.rasterize(c, self.size)
+        let primary_font = self.font(style);
+
+        // Check if primary font has this glyph (glyph_index 0 means missing)
+        if primary_font.lookup_glyph_index(c) != 0 {
+            return primary_font.rasterize(c, self.size);
+        }
+
+        // Try fallback fonts
+        for fallback in &self.fallback_fonts {
+            if fallback.lookup_glyph_index(c) != 0 {
+                return fallback.rasterize(c, self.size);
+            }
+        }
+
+        // No font has this glyph - return from primary (will be placeholder/tofu)
+        primary_font.rasterize(c, self.size)
+    }
+
+    /// Check if any font can render this character
+    pub fn has_glyph(&self, c: char) -> bool {
+        let primary = self.font(FontStyle::Regular);
+        if primary.lookup_glyph_index(c) != 0 {
+            return true;
+        }
+        self.fallback_fonts.iter().any(|f| f.lookup_glyph_index(c) != 0)
     }
 }

@@ -236,6 +236,25 @@ impl Grid {
         }
     }
 
+    /// Clear grid, pushing non-empty lines to scrollback first
+    pub fn clear_saving_scrollback(&mut self) {
+        // Push non-empty lines to scrollback before clearing
+        for line in &self.lines {
+            // Only push lines that have content
+            if line.cells.iter().any(|c| c.c != ' ' && c.c != '\0') {
+                self.scrollback.push_back(line.clone());
+            }
+        }
+        // Trim scrollback if needed
+        while self.scrollback.len() > self.max_scrollback {
+            self.scrollback.pop_front();
+        }
+        // Clear the grid
+        for line in &mut self.lines {
+            line.clear();
+        }
+    }
+
     /// Clear grid and scrollback
     pub fn clear_all(&mut self) {
         self.clear();
