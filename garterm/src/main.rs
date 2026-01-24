@@ -50,15 +50,19 @@ fn run(shell: &str, cwd: Option<&std::path::Path>) -> Result<()> {
     use std::io::{Read, Write};
     use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 
-    let size = pty::PtySize {
+    // Get initial terminal size from controlling terminal
+    let size = get_terminal_size().unwrap_or(pty::PtySize {
         rows: 24,
         cols: 80,
         pixel_width: 0,
         pixel_height: 0,
-    };
+    });
 
     let mut pty = pty::Pty::spawn(shell, size, cwd)?;
     info!("spawned shell: {}", shell);
+
+    // Set up signal handler for SIGCHLD and SIGWINCH
+    let mut signals = pty::SignalHandler::new()?;
 
     // Set stdin to raw mode for proper terminal behavior
     let _raw_guard = RawModeGuard::new()?;
@@ -72,26 +76,47 @@ fn run(shell: &str, cwd: Option<&std::path::Path>) -> Result<()> {
     // Store raw fds for polling
     let pty_raw_fd = pty.master_fd().as_raw_fd();
     let stdin_raw_fd = stdin.as_raw_fd();
+    let signal_raw_fd = signals.as_raw_fd();
 
     loop {
         // Create PollFds fresh each iteration using raw fd conversion
         // SAFETY: fds are valid for the duration of poll
         let pty_borrow = unsafe { BorrowedFd::borrow_raw(pty_raw_fd) };
         let stdin_borrow = unsafe { BorrowedFd::borrow_raw(stdin_raw_fd) };
+        let signal_borrow = unsafe { BorrowedFd::borrow_raw(signal_raw_fd) };
 
         let mut fds = [
             PollFd::new(pty_borrow, PollFlags::POLLIN),
             PollFd::new(stdin_borrow, PollFlags::POLLIN),
+            PollFd::new(signal_borrow, PollFlags::POLLIN),
         ];
 
         poll(&mut fds, PollTimeout::NONE)?;
 
         let pty_ready = fds[0].revents().is_some_and(|r| r.contains(PollFlags::POLLIN));
         let stdin_ready = fds[1].revents().is_some_and(|r| r.contains(PollFlags::POLLIN));
+        let signal_ready = fds[2].revents().is_some_and(|r| r.contains(PollFlags::POLLIN));
         let pty_hup = fds[0].revents().is_some_and(|r| r.contains(PollFlags::POLLHUP));
 
         // Let the fds slice go out of scope before mutable borrows
         let _ = fds;
+
+        // Handle signals
+        if signal_ready {
+            for sig in signals.read_signals()? {
+                match sig {
+                    pty::ReceivedSignal::ChildExited { pid, status } => {
+                        info!("child {} exited with status {}", pid, status);
+                    }
+                    pty::ReceivedSignal::WindowResized => {
+                        if let Some(size) = get_terminal_size() {
+                            info!("window resized to {}x{}", size.cols, size.rows);
+                            pty.resize(size)?;
+                        }
+                    }
+                }
+            }
+        }
 
         // Read from PTY
         if pty_ready {
@@ -131,6 +156,29 @@ fn run(shell: &str, cwd: Option<&std::path::Path>) -> Result<()> {
 
     info!("garterm exiting");
     Ok(())
+}
+
+/// Get the current terminal size from the controlling terminal
+fn get_terminal_size() -> Option<pty::PtySize> {
+    use std::os::fd::{AsFd, AsRawFd};
+
+    let stdin = std::io::stdin();
+    let mut winsize: nix::libc::winsize = unsafe { std::mem::zeroed() };
+
+    let ret = unsafe {
+        nix::libc::ioctl(stdin.as_fd().as_raw_fd(), nix::libc::TIOCGWINSZ, &mut winsize)
+    };
+
+    if ret == 0 && winsize.ws_col > 0 && winsize.ws_row > 0 {
+        Some(pty::PtySize {
+            rows: winsize.ws_row,
+            cols: winsize.ws_col,
+            pixel_width: winsize.ws_xpixel,
+            pixel_height: winsize.ws_ypixel,
+        })
+    } else {
+        None
+    }
 }
 
 /// RAII guard for raw terminal mode
