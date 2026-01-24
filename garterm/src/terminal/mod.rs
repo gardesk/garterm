@@ -565,7 +565,7 @@ impl Terminal {
                 2 => self.attrs.dim = true,
                 3 => self.attrs.italic = true,
                 4 => {
-                    // Underline - check for subparameter
+                    // Underline - check for subparameter (SGR 4:N syntax)
                     if param.len() > 1 {
                         self.attrs.underline = match param[1] {
                             0 => UnderlineStyle::None,
@@ -584,7 +584,10 @@ impl Terminal {
                 7 => self.attrs.inverse = true,
                 8 => self.attrs.hidden = true,
                 9 => self.attrs.strikethrough = true,
-                21 => self.attrs.underline = UnderlineStyle::Double,
+                // SGR 21: ECMA-48 says "doubly underlined", but many terminal libraries
+                // (crossterm, etc.) send SGR 21 as "bold off" for compatibility.
+                // We follow the common usage for compatibility with TUI apps.
+                21 => self.attrs.bold = false,
                 22 => {
                     self.attrs.bold = false;
                     self.attrs.dim = false;
