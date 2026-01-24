@@ -6,7 +6,7 @@ pub use font::{FontCache, FontStyle};
 pub use gpu::{GpuContext, GpuError};
 
 use crate::config::ColorPalette;
-use crate::terminal::{CellColor, Terminal};
+use crate::terminal::{CellColor, Terminal, UnderlineStyle};
 use crate::ui::{TabBarRenderData, TabRect};
 use atlas::{GlyphAtlas, GlyphKey};
 use bytemuck::{Pod, Zeroable};
@@ -989,6 +989,82 @@ impl Renderer {
                             );
                         }
                     }
+                }
+
+                // Underline rendering
+                if cell.attrs.underline != UnderlineStyle::None {
+                    let fg_color = if is_selected {
+                        [1.0, 1.0, 1.0, 1.0]
+                    } else {
+                        self.color_to_rgba(&cell.fg, true)
+                    };
+
+                    // Position underline at baseline + 1 pixel
+                    let underline_y = y + self.fonts.baseline() + 1.0;
+                    let underline_thickness = (cell_h / 14.0).max(1.0); // Scale with font size
+
+                    match cell.attrs.underline {
+                        UnderlineStyle::Single => {
+                            self.add_quad(
+                                to_ndc_x(x), to_ndc_y(underline_y),
+                                to_ndc_x(x + cell_w), to_ndc_y(underline_y + underline_thickness),
+                                0.0, 0.0, 0.0, 0.0,
+                                fg_color,
+                                0.0,
+                            );
+                        }
+                        UnderlineStyle::Double => {
+                            // First line
+                            self.add_quad(
+                                to_ndc_x(x), to_ndc_y(underline_y),
+                                to_ndc_x(x + cell_w), to_ndc_y(underline_y + underline_thickness),
+                                0.0, 0.0, 0.0, 0.0,
+                                fg_color,
+                                0.0,
+                            );
+                            // Second line
+                            self.add_quad(
+                                to_ndc_x(x), to_ndc_y(underline_y + underline_thickness * 2.0),
+                                to_ndc_x(x + cell_w), to_ndc_y(underline_y + underline_thickness * 3.0),
+                                0.0, 0.0, 0.0, 0.0,
+                                fg_color,
+                                0.0,
+                            );
+                        }
+                        UnderlineStyle::Curly | UnderlineStyle::Dotted | UnderlineStyle::Dashed => {
+                            // For simplicity, render these as single underline for now
+                            // TODO: Implement curly/dotted/dashed styles with proper rendering
+                            self.add_quad(
+                                to_ndc_x(x), to_ndc_y(underline_y),
+                                to_ndc_x(x + cell_w), to_ndc_y(underline_y + underline_thickness),
+                                0.0, 0.0, 0.0, 0.0,
+                                fg_color,
+                                0.0,
+                            );
+                        }
+                        UnderlineStyle::None => {}
+                    }
+                }
+
+                // Strikethrough rendering
+                if cell.attrs.strikethrough {
+                    let fg_color = if is_selected {
+                        [1.0, 1.0, 1.0, 1.0]
+                    } else {
+                        self.color_to_rgba(&cell.fg, true)
+                    };
+
+                    // Position strikethrough at middle of cell (roughly at x-height)
+                    let strike_y = y + cell_h * 0.45;
+                    let strike_thickness = (cell_h / 14.0).max(1.0);
+
+                    self.add_quad(
+                        to_ndc_x(x), to_ndc_y(strike_y),
+                        to_ndc_x(x + cell_w), to_ndc_y(strike_y + strike_thickness),
+                        0.0, 0.0, 0.0, 0.0,
+                        fg_color,
+                        0.0,
+                    );
                 }
             }
         }
