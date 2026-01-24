@@ -12,8 +12,14 @@ path = "src/main.rs"
 
 [dependencies]
 garterm-ipc.workspace = true
+gartk-core.workspace = true
+gartk-x11.workspace = true
 
 vte.workspace = true
+wgpu.workspace = true
+raw-window-handle.workspace = true
+bytemuck.workspace = true
+fontdue.workspace = true
 unicode-width.workspace = true
 nix.workspace = true
 clap.workspace = true
@@ -21,3 +27,5 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
+pollster.workspace = true
+x11rb.workspace = true

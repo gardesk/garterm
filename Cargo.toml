@@ -55,3 +55,9 @@ anyhow = "1"
 
 # Unicode
 unicode-width = "0.2"
+
+# Async
+pollster = "0.4"
+
+# X11 (for stream access)
+x11rb = "0.13"
