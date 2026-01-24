@@ -468,6 +468,11 @@ impl Renderer {
                 self.add_pane_border(pane.x, pane.y, pane.width, pane.height, pane.focused);
             }
 
+            // Dim inactive panes with a semi-transparent overlay
+            if !pane.focused && panes.len() > 1 {
+                self.add_dim_overlay(pane.x, pane.y, pane.width, pane.height);
+            }
+
             tracing::trace!(
                 "Pane {} at ({}, {}) size {}x{} focused={}",
                 i, pane.x, pane.y, pane.width, pane.height, pane.focused
@@ -556,6 +561,19 @@ impl Renderer {
                 tab.rect.color,
                 0.0,
             );
+
+            // Active tab accent indicator (colored bar at bottom)
+            if tab.is_active {
+                let accent_height = 3.0;
+                let accent_color = [0.4, 0.6, 1.0, 1.0]; // Blue accent matching focused pane border
+                self.add_quad(
+                    to_ndc_x(tab.rect.x), to_ndc_y(tab.rect.y + tab.rect.height - accent_height),
+                    to_ndc_x(tab.rect.x + tab.rect.width), to_ndc_y(tab.rect.y + tab.rect.height),
+                    0.0, 0.0, 0.0, 0.0,
+                    accent_color,
+                    0.0,
+                );
+            }
 
             // Tab title text (render each character using configured color)
             self.render_text_at(
@@ -714,6 +732,11 @@ impl Renderer {
                 self.add_pane_border(pane.x, pane.y, pane.width, pane.height, pane.focused);
             }
 
+            // Dim inactive panes with a semi-transparent overlay
+            if !pane.focused && panes.len() > 1 {
+                self.add_dim_overlay(pane.x, pane.y, pane.width, pane.height);
+            }
+
             // Show scroll indicator when scrolled back from bottom
             if pane.terminal.is_scrolled() {
                 self.add_scroll_indicator(pane.x, pane.y, pane.width, pane.height);
@@ -827,6 +850,24 @@ impl Renderer {
             to_ndc_x(x + w), to_ndc_y(y + h),
             0.0, 0.0, 0.0, 0.0,
             color,
+            0.0,
+        );
+    }
+
+    /// Add a semi-transparent dark overlay to dim inactive panes
+    fn add_dim_overlay(&mut self, x: u32, y: u32, width: u32, height: u32) {
+        let (surface_w, surface_h) = self.gpu.size();
+        let to_ndc_x = |px: f32| (px / surface_w as f32) * 2.0 - 1.0;
+        let to_ndc_y = |py: f32| 1.0 - (py / surface_h as f32) * 2.0;
+
+        // Semi-transparent black overlay to dim the pane
+        let dim_color = [0.0, 0.0, 0.0, 0.35];
+
+        self.add_quad(
+            to_ndc_x(x as f32), to_ndc_y(y as f32),
+            to_ndc_x((x + width) as f32), to_ndc_y((y + height) as f32),
+            0.0, 0.0, 0.0, 0.0,
+            dim_color,
             0.0,
         );
     }
