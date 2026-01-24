@@ -98,7 +98,8 @@ impl Pane {
         if let Some(cmd) = startup_cmd {
             pane.startup_cmd_state = StartupCmdState::WaitingForPrompt {
                 cmd: cmd.to_string(),
-                deadline: Instant::now() + Duration::from_millis(500),
+                // Deadline is checked only AFTER DA1 response, so this is additional wait time
+                deadline: Instant::now() + Duration::from_millis(1000),
             };
         }
 
@@ -167,24 +168,37 @@ impl Pane {
     /// Called when terminal receives OSC 133;A prompt marker
     pub fn on_prompt_ready(&mut self) {
         if let StartupCmdState::WaitingForPrompt { ref cmd, .. } = self.startup_cmd_state {
+            // Also require DA1 to be responded to (shell has completed basic init)
+            if !self.terminal.da1_responded() {
+                return;
+            }
             let cmd_with_newline = format!("{}\n", cmd);
             if let Err(e) = self.write_pty(cmd_with_newline.as_bytes()) {
                 tracing::error!("Failed to send startup command: {}", e);
             }
             self.startup_cmd_state = StartupCmdState::Sent;
+            tracing::debug!("Sent startup command on prompt ready");
         }
     }
 
     /// Check startup deadline and send command if timed out
+    /// Only sends after DA1 has been responded to (shell has started initialization)
     pub fn check_startup_deadline(&mut self) {
         if let StartupCmdState::WaitingForPrompt { ref cmd, deadline } = self.startup_cmd_state {
+            // Wait for DA1 response before considering the deadline
+            // This ensures the shell has at least started initialization
+            if !self.terminal.da1_responded() {
+                return;
+            }
+
             if Instant::now() >= deadline {
-                // Fallback: send anyway after timeout
+                // Fallback: send anyway after timeout (DA1 responded + deadline passed)
                 let cmd_with_newline = format!("{}\n", cmd);
                 if let Err(e) = self.write_pty(cmd_with_newline.as_bytes()) {
                     tracing::error!("Failed to send startup command (deadline): {}", e);
                 }
                 self.startup_cmd_state = StartupCmdState::Sent;
+                tracing::debug!("Sent startup command after DA1 + deadline");
             }
         }
     }

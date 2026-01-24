@@ -78,6 +78,9 @@ pub struct Terminal {
     clipboard_events: VecDeque<ClipboardEvent>,
     /// Prompt ready flag (from OSC 133;A - shell integration)
     prompt_ready: bool,
+    /// DA1 (Primary Device Attributes) has been responded to
+    /// Used to know when shell initialization queries are complete
+    da1_responded: bool,
 }
 
 impl Terminal {
@@ -112,6 +115,7 @@ impl Terminal {
             current_hyperlink_id: 0,
             clipboard_events: VecDeque::new(),
             prompt_ready: false,
+            da1_responded: false,
         }
     }
 
@@ -177,6 +181,12 @@ impl Terminal {
     /// Check and clear prompt ready flag (from OSC 133;A)
     pub fn take_prompt_ready(&mut self) -> bool {
         std::mem::replace(&mut self.prompt_ready, false)
+    }
+
+    /// Check if DA1 (Primary Device Attributes) has been responded to
+    /// Used to know when shell initialization is far enough along
+    pub fn da1_responded(&self) -> bool {
+        self.da1_responded
     }
 
     /// Get current working directory (from OSC 7)
@@ -1079,6 +1089,8 @@ impl vte::Perform for Performer<'_> {
                 // 9 = national replacement charsets, 15 = technical charsets,
                 // 18 = user windows, 21 = horizontal scrolling, 22 = ANSI color
                 self.term.queue_response(b"\x1b[?64;1;2;6;9;15;18;21;22c".to_vec());
+                self.term.da1_responded = true;
+                debug!("DA1: responded with VT420 capabilities");
             }
 
             // Secondary Device Attributes (DA2)
