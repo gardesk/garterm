@@ -1,0 +1,268 @@
+# garterm default configuration
+#
+# Location: ~/.config/garterm/config.toml
+# Reload: kill -HUP $(pgrep garterm)
+#
+# All values shown are defaults. Uncomment and modify as needed.
+
+#==============================================================================
+# GENERAL
+#==============================================================================
+[general]
+# Shell to execute
+# Default: $SHELL environment variable, or /bin/sh
+# shell = "/bin/zsh"
+
+# Shell arguments (e.g., login shell)
+# shell_args = ["-l"]
+
+# Starting directory
+# Default: inherit from parent process
+# working_directory = "/home/user/projects"
+
+# Rendering mode:
+#   false = continuous 60fps (required on Asahi Linux)
+#   true  = VSync/dirty-flag only (lower CPU, needs proper VSync support)
+vsync = false
+
+# Log level: "error", "warn", "info", "debug", "trace"
+# log_level = "info"
+
+#==============================================================================
+# FONT
+#==============================================================================
+[font]
+# Font family (must be monospace)
+# Examples: "JetBrains Mono", "Fira Code", "Hack", "Source Code Pro",
+#           "IBM Plex Mono", "Cascadia Code", "monospace"
+family = "monospace"
+
+# Font size in points
+size = 14.0
+
+# Use a different font for bold text
+# bold_family = "JetBrains Mono Bold"
+
+# Use a different font for italic text
+# italic_family = "JetBrains Mono Italic"
+
+# Render bright colors as bold
+bold_is_bright = false
+
+# Enable ligatures (future feature, requires font support)
+ligatures = false
+
+# Extra horizontal spacing between characters (pixels)
+letter_spacing = 0.0
+
+# Extra vertical spacing between lines (pixels)
+line_spacing = 0.0
+
+#==============================================================================
+# WINDOW
+#==============================================================================
+[window]
+# Window title (can be overridden by shell via OSC 0/2)
+title = "garterm"
+
+# Window class for WM rules (e.g., gar.rule({ class = "garterm" }, ...))
+class = "garterm"
+
+# Inner padding [horizontal, vertical] in pixels
+padding = [0, 0]
+
+# Initial size in columns and rows
+columns = 80
+rows = 24
+
+# Window opacity (0.0 - 1.0, requires compositor like picom)
+opacity = 1.0
+
+# Start in fullscreen mode
+fullscreen = false
+
+#==============================================================================
+# TERMINAL BEHAVIOR
+#==============================================================================
+[terminal]
+# Maximum lines kept in scrollback history
+scrollback_lines = 10000
+
+# Lines to scroll per mouse wheel tick
+scroll_lines = 3
+
+# Enable bracketed paste (wrap pasted text in escape sequences)
+bracketed_paste = true
+
+# Allow programs to write to system clipboard (OSC 52)
+clipboard_write = true
+
+# Allow programs to read from system clipboard (OSC 52)
+# SECURITY WARNING: Enables clipboard exfiltration by malicious programs
+clipboard_read = false
+
+# Close pane/window when shell exits
+close_on_exit = true
+
+# Keep pane open after shell exits (show exit status)
+# hold_on_exit = false
+
+# TERM environment variable
+term = "xterm-256color"
+
+#==============================================================================
+# COLORS
+#==============================================================================
+[colors]
+# Use a built-in color preset:
+#
+#   "tokyo-night"      - Deep blue/purple dark theme (default)
+#   "catppuccin-mocha" - Warm pastel dark theme
+#   "gruvbox-dark"     - Retro earthy dark theme
+#   "dracula"          - Purple-accented dark theme
+#   "nord"             - Arctic bluish dark theme
+#   "solarized-dark"   - Precision dark theme
+#   "one-dark"         - Atom editor dark theme
+#
+preset = "tokyo-night"
+
+# Or define custom colors (uncomment to override preset):
+#
+# foreground = "#c0caf5"
+# background = "#1a1b26"
+# cursor = "#c0caf5"
+# cursor_text = "#1a1b26"
+# selection = "#33467c"
+# selection_text = "#c0caf5"
+#
+# # ANSI colors (0-7: normal, 8-15: bright)
+# black = "#15161e"
+# red = "#f7768e"
+# green = "#9ece6a"
+# yellow = "#e0af68"
+# blue = "#7aa2f7"
+# magenta = "#bb9af7"
+# cyan = "#7dcfff"
+# white = "#a9b1d6"
+#
+# bright_black = "#414868"
+# bright_red = "#f7768e"
+# bright_green = "#9ece6a"
+# bright_yellow = "#e0af68"
+# bright_blue = "#7aa2f7"
+# bright_magenta = "#bb9af7"
+# bright_cyan = "#7dcfff"
+# bright_white = "#c0caf5"
+
+#==============================================================================
+# MOUSE
+#==============================================================================
+[mouse]
+# Auto-copy selected text to PRIMARY selection
+copy_on_select = true
+
+# Middle-click pastes from PRIMARY selection
+middle_click_paste = true
+
+# Right-click action: "paste", "context_menu", "none"
+right_click = "paste"
+
+# Extra characters considered part of a word (for double-click selection)
+# Default includes hyphen and underscore
+word_chars = "-_"
+
+# Detect URLs and make them clickable
+url_detection = true
+
+# Modifier key required for URL clicks: "ctrl", "shift", "alt", or null
+url_modifier = "ctrl"
+
+#==============================================================================
+# BELL
+#==============================================================================
+[bell]
+# Flash screen on bell
+visual = true
+
+# Duration of visual bell in milliseconds
+visual_duration_ms = 100
+
+# Play audio on bell
+audio = false
+
+# Command to play bell sound
+# audio_command = "paplay /usr/share/sounds/freedesktop/stereo/bell.oga"
+
+#==============================================================================
+# KEYBINDINGS
+#==============================================================================
+# Format: "modifiers+key" = "action"
+#
+# Modifiers: ctrl, alt, shift, super
+#
+# Keys: a-z, 0-9, F1-F12, Return, Tab, Escape, Space, Backspace,
+#       Up, Down, Left, Right, Home, End, Page_Up, Page_Down,
+#       Insert, Delete, plus, minus, equal, bracketleft, bracketright, etc.
+#
+# Actions:
+#   Clipboard:  copy, paste, paste_primary
+#   Tabs:       new_tab, close_tab, next_tab, prev_tab, tab_1..tab_9
+#   Panes:      split_horizontal (hsplit), split_vertical (vsplit), close_pane
+#               focus_up, focus_down, focus_left, focus_right
+#   Scroll:     scroll_up, scroll_down, scroll_page_up, scroll_page_down
+#               scroll_to_top, scroll_to_bottom
+#   Font:       increase_font_size (zoom_in), decrease_font_size (zoom_out)
+#               reset_font_size (zoom_reset)
+#   Search:     search_forward, search_backward
+#   Misc:       reload_config, toggle_fullscreen, reset_terminal, clear_scrollback
+#   Disable:    none (disables a default binding)
+#
+[keybinds]
+# Default bindings (uncomment to customize):
+#
+# "ctrl+shift+c" = "copy"
+# "ctrl+shift+v" = "paste"
+# "ctrl+shift+t" = "new_tab"
+# "ctrl+shift+w" = "close_pane"
+# "ctrl+shift+h" = "split_horizontal"
+# "ctrl+shift+e" = "split_vertical"
+# "ctrl+shift+Up" = "focus_up"
+# "ctrl+shift+Down" = "focus_down"
+# "ctrl+shift+Left" = "focus_left"
+# "ctrl+shift+Right" = "focus_right"
+# "shift+Page_Up" = "scroll_page_up"
+# "shift+Page_Down" = "scroll_page_down"
+# "ctrl+shift+Home" = "scroll_to_top"
+# "ctrl+shift+End" = "scroll_to_bottom"
+# "ctrl+shift+equal" = "increase_font_size"
+# "ctrl+shift+plus" = "increase_font_size"
+# "ctrl+shift+minus" = "decrease_font_size"
+# "ctrl+shift+0" = "reset_font_size"
+# "ctrl+shift+f" = "search_forward"
+# "ctrl+shift+r" = "reload_config"
+#
+# Tab switching (1-9):
+# "ctrl+shift+1" = "tab_1"
+# "ctrl+shift+2" = "tab_2"
+# ...
+
+#==============================================================================
+# GAR INTEGRATION (Lua)
+#==============================================================================
+# For power users: garterm can also read from ~/.config/gar/init.lua
+#
+# Add this to your gar config:
+#
+#   gar.terminal = {
+#       shell = "/bin/zsh",
+#       font = {
+#           family = "JetBrains Mono",
+#           size = 12.0,
+#       },
+#       colors = {
+#           preset = "catppuccin",
+#       },
+#       scrollback_lines = 50000,
+#   }
+#
+# The TOML config takes precedence over Lua if both exist.
