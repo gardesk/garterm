@@ -3,18 +3,19 @@ use nix::sys::signalfd::{SfdFlags, SignalFd};
 use std::io;
 use std::os::fd::AsRawFd;
 
-/// Handles SIGCHLD and SIGWINCH via signalfd for poll integration
+/// Handles SIGCHLD, SIGWINCH, and SIGHUP via signalfd for poll integration
 pub struct SignalHandler {
     fd: SignalFd,
     mask: SigSet,
 }
 
 impl SignalHandler {
-    /// Create a new signal handler, blocking SIGCHLD and SIGWINCH
+    /// Create a new signal handler, blocking SIGCHLD, SIGWINCH, and SIGHUP
     pub fn new() -> io::Result<Self> {
         let mut mask = SigSet::empty();
         mask.add(Signal::SIGCHLD);
         mask.add(Signal::SIGWINCH);
+        mask.add(Signal::SIGHUP);
 
         // Block these signals in the main thread
         sigprocmask(SigmaskHow::SIG_BLOCK, Some(&mask), None)
@@ -45,6 +46,7 @@ impl SignalHandler {
                             status: info.ssi_status,
                         },
                         nix::libc::SIGWINCH => ReceivedSignal::WindowResized,
+                        nix::libc::SIGHUP => ReceivedSignal::ReloadConfig,
                         _ => continue,
                     };
                     signals.push(sig);
@@ -73,4 +75,6 @@ pub enum ReceivedSignal {
     ChildExited { pid: i32, status: i32 },
     /// SIGWINCH - terminal window was resized
     WindowResized,
+    /// SIGHUP - reload configuration
+    ReloadConfig,
 }

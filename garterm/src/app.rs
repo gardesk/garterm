@@ -237,8 +237,29 @@ impl App {
                 ReceivedSignal::WindowResized => {
                     // X11 window resize is handled via ConfigureNotify
                 }
+                ReceivedSignal::ReloadConfig => {
+                    info!("Reloading configuration (SIGHUP)");
+                    self.reload_config()?;
+                }
             }
         }
+        Ok(())
+    }
+
+    /// Reload configuration from disk
+    fn reload_config(&mut self) -> Result<()> {
+        let config = Config::load();
+        info!("Config reloaded");
+
+        // Update vsync setting
+        self.vsync = config.general.vsync;
+
+        // TODO: Reload colors when renderer supports it
+        // TODO: Reload keybinds
+
+        // Force redraw
+        self.terminal.mark_dirty();
+
         Ok(())
     }
 
