@@ -5,6 +5,81 @@ use super::tab::TabId;
 /// Height of the tab bar in pixels
 pub const TAB_BAR_HEIGHT: u32 = 24;
 
+/// Shorten a path for display in tab title
+/// e.g., "/home/user/Projects/foo/bar" → "~/P/f/bar"
+fn shorten_path(title: &str) -> String {
+    // If it doesn't look like a path, return as-is
+    if !title.contains('/') {
+        return title.to_string();
+    }
+
+    let mut path = title.to_string();
+
+    // Replace home directory with ~
+    if let Some(home) = dirs::home_dir() {
+        if let Some(home_str) = home.to_str() {
+            if path.starts_with(home_str) {
+                path = format!("~{}", &path[home_str.len()..]);
+            }
+        }
+    }
+
+    // Split into components
+    let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    if parts.len() <= 2 {
+        return path;
+    }
+
+    // Keep first component (~ or root indicator) and last component full
+    // Shorten middle components to first char
+    let mut result = String::new();
+
+    if path.starts_with("~/") {
+        result.push_str("~/");
+        // Shorten all but the last component
+        for (i, part) in parts[1..].iter().enumerate() {
+            if i == parts.len() - 2 {
+                // Last component - keep full
+                result.push_str(part);
+            } else {
+                // Middle component - first char only
+                if let Some(c) = part.chars().next() {
+                    result.push(c);
+                    result.push('/');
+                }
+            }
+        }
+    } else if path.starts_with('/') {
+        result.push('/');
+        for (i, part) in parts.iter().enumerate() {
+            if i == parts.len() - 1 {
+                result.push_str(part);
+            } else {
+                if let Some(c) = part.chars().next() {
+                    result.push(c);
+                    result.push('/');
+                }
+            }
+        }
+    } else {
+        return path;
+    }
+
+    result
+}
+
+/// Truncate a string to fit within max_chars, adding ellipsis if needed
+fn truncate_with_ellipsis(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        return s.to_string();
+    }
+    if max_chars <= 3 {
+        return "…".to_string();
+    }
+    let truncated: String = s.chars().take(max_chars - 1).collect();
+    format!("{}…", truncated)
+}
+
 /// Tab bar state
 pub struct TabBar {
     /// Whether tab bar is visible
@@ -64,6 +139,7 @@ impl TabBar {
         width: u32,
         _height: u32,
         cell_width: f32,
+        cell_height: f32,
     ) -> TabBarRenderData {
         // Hide tab bar if not visible, no tabs, or only one tab
         if !self.visible || tabs.len() <= 1 {
@@ -86,6 +162,11 @@ impl TabBar {
         let max_tab_width = 200.0f32;
         let tab_width = (width as f32 / tab_count).min(max_tab_width);
 
+        // Calculate max chars that fit in a tab (with padding)
+        let padding = 16.0; // 8px on each side
+        let available_width = tab_width - padding;
+        let max_chars = (available_width / cell_width).floor() as usize;
+
         let mut x = 0.0;
         for (id, title, is_active) in tabs {
             // Tab background
@@ -94,6 +175,10 @@ impl TabBar {
             } else {
                 [0.10, 0.10, 0.14, 1.0] // Inactive tab
             };
+
+            // Shorten path and truncate to fit
+            let shortened = shorten_path(title);
+            let display_title = truncate_with_ellipsis(&shortened, max_chars);
 
             data.tabs.push(TabRenderInfo {
                 id: *id,
@@ -104,9 +189,9 @@ impl TabBar {
                     height: self.height as f32,
                     color: bg_color,
                 },
-                title: title.clone(),
+                title: display_title,
                 title_x: x + 8.0, // Padding
-                title_y: (self.height as f32 - cell_width) / 2.0,
+                title_y: (self.height as f32 - cell_height) / 2.0,
                 is_active: *is_active,
             });
 

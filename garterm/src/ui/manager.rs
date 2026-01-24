@@ -276,7 +276,7 @@ impl TabManager {
             })
             .collect();
 
-        self.tab_bar.render(&tabs, width, height, self.cell_width)
+        self.tab_bar.render(&tabs, width, height, self.cell_width, self.cell_height)
     }
 
     /// Handle a click at pixel coordinates
@@ -419,5 +419,59 @@ impl TabManager {
         for tab in self.tabs.values_mut() {
             tab.update_title();
         }
+    }
+
+    /// Set a custom title for a tab
+    pub fn set_tab_title(&mut self, tab_id: TabId, title: String) {
+        if let Some(tab) = self.tabs.get_mut(&tab_id) {
+            tab.set_title(title);
+        }
+    }
+
+    /// Find which tab contains a pane
+    pub fn find_pane_tab(&self, pane_id: PaneId) -> Option<TabId> {
+        for (tab_id, tab) in &self.tabs {
+            if tab.panes.contains_key(&pane_id) {
+                return Some(*tab_id);
+            }
+        }
+        None
+    }
+
+    /// Get a pane by ID (searches all tabs)
+    pub fn get_pane(&self, pane_id: PaneId) -> Option<&super::pane::Pane> {
+        for tab in self.tabs.values() {
+            if let Some(pane) = tab.panes.get(&pane_id) {
+                return Some(pane);
+            }
+        }
+        None
+    }
+
+    /// Get a pane mutably by ID (searches all tabs)
+    pub fn get_pane_mut(&mut self, pane_id: PaneId) -> Option<&mut super::pane::Pane> {
+        for tab in self.tabs.values_mut() {
+            if let Some(pane) = tab.panes.get_mut(&pane_id) {
+                return Some(pane);
+            }
+        }
+        None
+    }
+
+    /// Focus a specific pane by ID (switches tab if needed)
+    pub fn focus_pane(&mut self, pane_id: PaneId) -> bool {
+        if let Some(tab_id) = self.find_pane_tab(pane_id) {
+            self.active_tab = tab_id;
+            if let Some(tab) = self.tabs.get_mut(&tab_id) {
+                tab.focus(pane_id);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Get the active tab ID
+    pub fn active_tab_id(&self) -> TabId {
+        self.active_tab
     }
 }

@@ -15,6 +15,8 @@ pub struct Tab {
     pub id: TabId,
     /// Tab title (from focused pane or custom)
     pub title: String,
+    /// Custom title set by user/session (prevents OSC override)
+    custom_title: Option<String>,
     /// Split tree layout
     pub layout: SplitNode,
     /// All panes in this tab
@@ -62,6 +64,7 @@ impl Tab {
         Ok(Self {
             id,
             title: "shell".into(),
+            custom_title: None,
             layout: SplitNode::leaf(pane_id),
             panes,
             focused: pane_id,
@@ -223,13 +226,28 @@ impl Tab {
         self.layout.all_panes()
     }
 
-    /// Update tab title from focused pane's terminal title
+    /// Update tab title from focused pane's terminal title (only if no custom title set)
     pub fn update_title(&mut self) {
+        // Don't override custom titles
+        if self.custom_title.is_some() {
+            return;
+        }
         if let Some(pane) = self.panes.get(&self.focused) {
             let title = pane.terminal.title();
             if !title.is_empty() {
                 self.title = title.to_string();
             }
         }
+    }
+
+    /// Set a custom title for this tab (prevents OSC title updates)
+    pub fn set_title(&mut self, title: String) {
+        self.title = title.clone();
+        self.custom_title = Some(title);
+    }
+
+    /// Clear custom title (allows OSC title updates again)
+    pub fn clear_custom_title(&mut self) {
+        self.custom_title = None;
     }
 }
