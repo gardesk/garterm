@@ -204,6 +204,20 @@ impl Terminal {
         !self.grid.is_at_bottom()
     }
 
+    /// Force cleanup when program exits abnormally
+    ///
+    /// This handles the case where a TUI program (vim, htop, fackr, etc.)
+    /// exits without properly sending rmcup (CSI ? 1049 l) to restore the
+    /// primary screen. Without this cleanup, remnants of the TUI remain
+    /// visible with the shell prompt overlaid.
+    pub fn cleanup_on_exit(&mut self) {
+        // If we're on alternate screen, restore primary
+        if self.alt_grid.is_some() {
+            self.switch_to_primary_screen();
+        }
+        self.dirty = true;
+    }
+
     /// Queue a response to send to PTY
     fn queue_response(&mut self, response: Vec<u8>) {
         self.responses.push_back(response);

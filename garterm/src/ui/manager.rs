@@ -344,6 +344,12 @@ impl TabManager {
 
         for (tab_id, pane_id) in exits {
             if let Some(tab) = self.tabs.get_mut(&tab_id) {
+                // Clean up terminal before closing (restores primary screen if needed)
+                // This handles TUI programs that exit without sending rmcup
+                if let Some(pane) = tab.panes.get_mut(&pane_id) {
+                    pane.terminal.cleanup_on_exit();
+                }
+
                 if tab.panes.len() > 1 {
                     tab.close_pane(pane_id);
                 } else {
