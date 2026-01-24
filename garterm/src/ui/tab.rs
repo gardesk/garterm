@@ -36,8 +36,24 @@ impl Tab {
         height: u32,
         cwd: Option<&std::path::Path>,
     ) -> Result<Self> {
+        Self::new_with_command(id, shell, cols, rows, width, height, cwd, None)
+    }
+
+    /// Create a new tab with an initial pane and optional startup command
+    pub fn new_with_command(
+        id: TabId,
+        shell: &str,
+        cols: usize,
+        rows: usize,
+        width: u32,
+        height: u32,
+        cwd: Option<&std::path::Path>,
+        startup_cmd: Option<&str>,
+    ) -> Result<Self> {
         let pane_id = PaneId(0);
-        let mut pane = Pane::new(pane_id, shell, cols, rows, width, height, cwd)?;
+        let mut pane = Pane::new_with_command(
+            pane_id, shell, cols, rows, width, height, cwd, startup_cmd
+        )?;
         pane.focused = true;
 
         let mut panes = HashMap::new();
@@ -72,6 +88,19 @@ impl Tab {
         cell_height: f32,
         cwd: Option<&std::path::Path>,
     ) -> Result<PaneId> {
+        self.split_with_command(direction, shell, cell_width, cell_height, cwd, None)
+    }
+
+    /// Split the focused pane with an optional startup command
+    pub fn split_with_command(
+        &mut self,
+        direction: SplitDirection,
+        shell: &str,
+        cell_width: f32,
+        cell_height: f32,
+        cwd: Option<&std::path::Path>,
+        startup_cmd: Option<&str>,
+    ) -> Result<PaneId> {
         let focused_pane = self.panes.get(&self.focused).ok_or_else(|| {
             anyhow::anyhow!("No focused pane")
         })?;
@@ -89,7 +118,9 @@ impl Tab {
         let new_id = PaneId(self.next_pane_id);
         self.next_pane_id += 1;
 
-        let new_pane = Pane::new(new_id, shell, cols, rows, new_width, new_height, cwd)?;
+        let new_pane = Pane::new_with_command(
+            new_id, shell, cols, rows, new_width, new_height, cwd, startup_cmd
+        )?;
         self.panes.insert(new_id, new_pane);
 
         // Update layout tree

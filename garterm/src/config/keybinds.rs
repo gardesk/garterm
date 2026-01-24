@@ -108,6 +108,10 @@ pub enum Action {
     SendBytes(Vec<u8>),
     SendText(String),
 
+    // Lua scripting
+    LuaCallback(usize),      // Index into LuaRuntime callbacks
+    LoadSession(String),     // Load a named session
+
     // No action (for documenting disabled defaults)
     None,
 }
@@ -124,6 +128,10 @@ impl Action {
         }
         if let Some(n) = s.strip_prefix("scroll_down_") {
             return n.parse().ok().map(Action::ScrollDown);
+        }
+        // load_session:session_name
+        if let Some(name) = s.strip_prefix("load_session:") {
+            return Some(Action::LoadSession(name.to_string()));
         }
 
         match s.to_lowercase().replace(['-', '_'], "").as_str() {

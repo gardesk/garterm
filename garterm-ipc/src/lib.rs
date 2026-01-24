@@ -10,7 +10,14 @@ pub enum Command {
         exec: Option<String>,
     },
     /// Create new tab in focused window
-    NewTab { cwd: Option<String> },
+    NewTab {
+        cwd: Option<String>,
+        /// Startup command to run after shell prompt
+        #[serde(default, rename = "exec")]
+        startup_cmd: Option<String>,
+        #[serde(default)]
+        title: Option<String>,
+    },
     /// Close current tab
     CloseTab,
     /// Switch to next tab
@@ -20,7 +27,14 @@ pub enum Command {
     /// Switch to specific tab
     SwitchTab { index: usize },
     /// Split focused pane
-    Split { direction: String },
+    Split {
+        direction: String,
+        #[serde(default)]
+        cwd: Option<String>,
+        /// Startup command to run after shell prompt
+        #[serde(default, rename = "exec")]
+        startup_cmd: Option<String>,
+    },
     /// Close focused pane
     ClosePane,
     /// Focus pane in direction
@@ -29,6 +43,8 @@ pub enum Command {
     ResizePane { direction: String, amount: i32 },
     /// Send text to focused terminal
     SendText { text: String },
+    /// Load a named session from config
+    LoadSession { name: String },
     /// Get terminal info
     GetInfo,
     /// Reload configuration

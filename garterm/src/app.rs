@@ -1,4 +1,4 @@
-use crate::config::{Action, Config, KeybindSet, Modifiers as ConfigModifiers};
+use crate::config::{Action, Config, KeybindSet, LuaRuntime, Modifiers as ConfigModifiers, TerminalCommand};
 use crate::input::{Clipboard, KeyboardHandler, MouseButton, MouseEvent, MouseHandler, Selection, SelectionMode};
 use crate::ipc::IpcServer;
 use crate::pty::{PtySize, ReceivedSignal, SignalHandler};
@@ -38,6 +38,8 @@ pub struct App {
     shell: String,
     /// Working directory for new panes
     cwd: Option<std::path::PathBuf>,
+    /// Lua runtime for scripting (callbacks, sessions)
+    lua_runtime: Option<LuaRuntime>,
 }
 
 impl App {
@@ -129,14 +131,30 @@ impl App {
         let clipboard = Clipboard::new(&conn, window.id())?;
 
         // Load keybindings from config
-        let keybinds = config.keybindings();
-        info!("Loaded {} keybindings", keybinds.iter().count());
+        let mut keybinds = config.keybindings();
+        info!("Loaded {} keybindings from config", keybinds.iter().count());
 
         // Start IPC server
         let ipc = match IpcServer::new() {
             Ok(server) => Some(server),
             Err(e) => {
                 tracing::warn!("Failed to start IPC server: {}", e);
+                None
+            }
+        };
+
+        // Initialize Lua runtime for scripting
+        let lua_runtime = match LuaRuntime::new() {
+            Ok(runtime) => {
+                if let Err(e) = runtime.load() {
+                    tracing::warn!("Lua config error: {}", e);
+                }
+                // Merge Lua keybinds (function callbacks, sessions) into keybind set
+                runtime.merge_keybinds(&mut keybinds);
+                Some(runtime)
+            }
+            Err(e) => {
+                tracing::warn!("Failed to create Lua runtime: {}", e);
                 None
             }
         };
@@ -159,6 +177,7 @@ impl App {
             height: actual_height,
             shell: config.general.shell.clone(),
             cwd: config.general.working_directory.clone(),
+            lua_runtime,
         })
     }
 
@@ -222,6 +241,16 @@ impl App {
                     // Handle bell
                     if pane.terminal.take_bell() {
                         tracing::debug!("Bell!");
+                    }
+
+                    // Handle startup command: check for OSC 133 prompt ready
+                    if pane.terminal.take_prompt_ready() {
+                        pane.on_prompt_ready();
+                    }
+
+                    // Check startup command deadline (fallback for shells without OSC 133)
+                    if pane.has_pending_startup_cmd() {
+                        pane.check_startup_deadline();
                     }
                 }
             }
@@ -444,8 +473,160 @@ impl App {
                 Ok(false)
             }
 
+            // Lua scripting
+            Action::LuaCallback(index) => {
+                if let Some(ref runtime) = self.lua_runtime {
+                    if let Err(e) = runtime.execute_callback(*index) {
+                        tracing::error!("Lua callback error: {}", e);
+                    }
+                    // Process any pending terminal commands from the callback
+                    self.process_lua_commands()?;
+                }
+                Ok(true)
+            }
+            Action::LoadSession(name) => {
+                self.load_session(name)?;
+                Ok(true)
+            }
+
             Action::None => Ok(false),
         }
+    }
+
+    /// Process pending Lua commands from callbacks
+    fn process_lua_commands(&mut self) -> Result<()> {
+        let Some(ref runtime) = self.lua_runtime else { return Ok(()) };
+
+        let commands = runtime.take_pending_commands();
+        for cmd in commands {
+            match cmd {
+                TerminalCommand::NewTab { cwd, cmd, title } => {
+                    let cwd_path = cwd.map(std::path::PathBuf::from);
+                    self.tabs.new_tab_with_command(
+                        self.width,
+                        self.height,
+                        cwd_path.as_deref(),
+                        cmd.as_deref(),
+                    )?;
+                    // TODO: Set title if provided (currently set via OSC title sequence from shell)
+                    if let Some(_title) = title {
+                        // Will be set via OSC title sequence from shell
+                    }
+                    self.tabs.relayout(self.width, self.height)?;
+                    self.tabs.mark_all_dirty();
+                }
+                TerminalCommand::Split { direction, cwd, cmd } => {
+                    let cwd_path = cwd.map(std::path::PathBuf::from);
+                    match direction.to_lowercase().as_str() {
+                        "horizontal" | "h" => {
+                            self.tabs.split_horizontal_with_command(cwd_path.as_deref(), cmd.as_deref())?
+                        }
+                        _ => {
+                            self.tabs.split_vertical_with_command(cwd_path.as_deref(), cmd.as_deref())?
+                        }
+                    };
+                    self.tabs.relayout(self.width, self.height)?;
+                    self.tabs.mark_all_dirty();
+                }
+                TerminalCommand::SendText { pane_id: _, text } => {
+                    // TODO: Support pane_id targeting
+                    if let Some(pane) = self.tabs.focused_pane_mut() {
+                        pane.write_pty(text.as_bytes())?;
+                    }
+                }
+                TerminalCommand::CloseTab { tab_id: _ } => {
+                    self.tabs.close_tab();
+                    self.tabs.relayout(self.width, self.height)?;
+                    self.tabs.mark_all_dirty();
+                }
+                TerminalCommand::ClosePane { pane_id: _ } => {
+                    if self.tabs.close_pane() {
+                        self.tabs.relayout(self.width, self.height)?;
+                        self.tabs.mark_all_dirty();
+                    }
+                }
+                TerminalCommand::FocusTab { index } => {
+                    self.tabs.switch_to_tab(index);
+                    self.tabs.mark_all_dirty();
+                }
+                TerminalCommand::FocusPane { pane_id: _ } => {
+                    // TODO: Support direct pane focusing by ID
+                }
+                TerminalCommand::FocusDirection { direction } => {
+                    let dir = match direction.to_lowercase().as_str() {
+                        "up" => crate::ui::Direction::Up,
+                        "down" => crate::ui::Direction::Down,
+                        "left" => crate::ui::Direction::Left,
+                        _ => crate::ui::Direction::Right,
+                    };
+                    self.tabs.focus_direction(dir, self.width, self.height);
+                    self.tabs.mark_all_dirty();
+                }
+                TerminalCommand::NextTab => {
+                    self.tabs.next_tab();
+                    self.tabs.mark_all_dirty();
+                }
+                TerminalCommand::PrevTab => {
+                    self.tabs.prev_tab();
+                    self.tabs.mark_all_dirty();
+                }
+                TerminalCommand::LoadSession { name } => {
+                    self.load_session(&name)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Load a named session from Lua config
+    fn load_session(&mut self, name: &str) -> Result<()> {
+        let Some(ref runtime) = self.lua_runtime else {
+            tracing::warn!("No Lua runtime, cannot load session");
+            return Ok(());
+        };
+
+        let Some(session) = runtime.get_session(name) else {
+            tracing::warn!("Session '{}' not found", name);
+            return Ok(());
+        };
+
+        info!("Loading session '{}' with {} tabs", name, session.tabs.len());
+
+        for tab_def in &session.tabs {
+            // Create the tab with startup command (waits for OSC 133 prompt)
+            self.tabs.new_tab_with_command(
+                self.width,
+                self.height,
+                tab_def.cwd.as_deref(),
+                tab_def.cmd.as_deref(),
+            )?;
+
+            // Create splits within the tab
+            for split_def in &tab_def.splits {
+                match split_def.direction.to_lowercase().as_str() {
+                    "horizontal" | "h" => {
+                        self.tabs.split_horizontal_with_command(
+                            split_def.cwd.as_deref(),
+                            split_def.cmd.as_deref(),
+                        )?
+                    }
+                    _ => {
+                        self.tabs.split_vertical_with_command(
+                            split_def.cwd.as_deref(),
+                            split_def.cmd.as_deref(),
+                        )?
+                    }
+                };
+            }
+        }
+
+        self.tabs.relayout(self.width, self.height)?;
+        self.tabs.mark_all_dirty();
+
+        // Focus first tab
+        self.tabs.switch_to_tab(1);
+
+        Ok(())
     }
 
     /// Convert gartk Modifiers to config Modifiers
@@ -524,9 +705,24 @@ impl App {
         // Reload colors
         self.renderer.set_colors(config.color_palette());
 
-        // Reload keybindings
+        // Reload keybindings from TOML config
         self.keybinds = config.keybindings();
-        info!("Reloaded {} keybindings", self.keybinds.iter().count());
+        info!("Reloaded {} keybindings from config", self.keybinds.iter().count());
+
+        // Reload Lua runtime and merge keybinds
+        match LuaRuntime::new() {
+            Ok(runtime) => {
+                if let Err(e) = runtime.load() {
+                    tracing::warn!("Lua config error on reload: {}", e);
+                }
+                // Merge Lua keybinds into the keybind set
+                runtime.merge_keybinds(&mut self.keybinds);
+                self.lua_runtime = Some(runtime);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to create Lua runtime on reload: {}", e);
+            }
+        }
 
         // Update shell for new panes
         self.shell = config.general.shell.clone();
@@ -558,9 +754,14 @@ impl App {
                     Err(e) => Response::error(format!("Failed to reload: {}", e)),
                 }
             }
-            Command::NewTab { cwd } => {
+            Command::NewTab { cwd, startup_cmd, title: _ } => {
                 let cwd_path = cwd.as_ref().map(|s| std::path::PathBuf::from(s));
-                match self.tabs.new_tab(self.width, self.height, cwd_path.as_deref()) {
+                match self.tabs.new_tab_with_command(
+                    self.width,
+                    self.height,
+                    cwd_path.as_deref(),
+                    startup_cmd.as_deref(),
+                ) {
                     Ok(_) => {
                         let _ = self.tabs.relayout(self.width, self.height);
                         self.tabs.mark_all_dirty();
@@ -590,10 +791,17 @@ impl App {
                 self.tabs.mark_all_dirty();
                 Response::ok()
             }
-            Command::Split { direction } => {
+            Command::Split { direction, cwd, startup_cmd } => {
+                let cwd_path = cwd.as_ref()
+                    .map(|s| std::path::PathBuf::from(s))
+                    .or_else(|| self.cwd.clone());
                 let result = match direction.to_lowercase().as_str() {
-                    "horizontal" | "h" => self.tabs.split_horizontal(self.cwd.as_deref()),
-                    "vertical" | "v" => self.tabs.split_vertical(self.cwd.as_deref()),
+                    "horizontal" | "h" => {
+                        self.tabs.split_horizontal_with_command(cwd_path.as_deref(), startup_cmd.as_deref())
+                    }
+                    "vertical" | "v" => {
+                        self.tabs.split_vertical_with_command(cwd_path.as_deref(), startup_cmd.as_deref())
+                    }
                     _ => return Response::error(format!("Invalid direction: {}", direction)),
                 };
                 match result {
@@ -603,6 +811,12 @@ impl App {
                         Response::ok()
                     }
                     Err(e) => Response::error(format!("Failed to split: {}", e)),
+                }
+            }
+            Command::LoadSession { name } => {
+                match self.load_session(&name) {
+                    Ok(()) => Response::ok(),
+                    Err(e) => Response::error(format!("Failed to load session: {}", e)),
                 }
             }
             Command::ClosePane => {

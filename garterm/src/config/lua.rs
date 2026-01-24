@@ -98,6 +98,11 @@ fn create_gar_stubs(lua: &mlua::Lua) -> mlua::Result<()> {
 }
 
 /// Parse gar.terminal Lua table into Config
+/// This is also called by runtime.rs for the persistent Lua runtime
+pub fn parse_terminal_table_internal(table: &mlua::Table) -> Config {
+    parse_terminal_table(table)
+}
+
 fn parse_terminal_table(table: &mlua::Table) -> Config {
     let mut config = Config::default();
 

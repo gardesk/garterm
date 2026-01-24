@@ -76,6 +76,8 @@ pub struct Terminal {
     current_hyperlink_id: u16,
     /// Clipboard events pending processing
     clipboard_events: VecDeque<ClipboardEvent>,
+    /// Prompt ready flag (from OSC 133;A - shell integration)
+    prompt_ready: bool,
 }
 
 impl Terminal {
@@ -109,6 +111,7 @@ impl Terminal {
             next_hyperlink_id: 1,
             current_hyperlink_id: 0,
             clipboard_events: VecDeque::new(),
+            prompt_ready: false,
         }
     }
 
@@ -164,6 +167,11 @@ impl Terminal {
     /// Check and clear bell pending flag
     pub fn take_bell(&mut self) -> bool {
         std::mem::replace(&mut self.bell_pending, false)
+    }
+
+    /// Check and clear prompt ready flag (from OSC 133;A)
+    pub fn take_prompt_ready(&mut self) -> bool {
+        std::mem::replace(&mut self.prompt_ready, false)
     }
 
     /// Get current working directory (from OSC 7)
@@ -751,6 +759,39 @@ impl vte::Perform for Performer<'_> {
                                 self.term.clipboard_events.push_back(ClipboardEvent::Set(selection, decoded));
                             }
                         }
+                    }
+                }
+            }
+            // OSC 133: Shell integration (prompt marking)
+            // Format: OSC 133 ; A ST (prompt start)
+            //         OSC 133 ; B ST (command start)
+            //         OSC 133 ; C ST (command output start)
+            //         OSC 133 ; D ; exit_code ST (command finished)
+            b"133" => {
+                if params.len() >= 2 {
+                    match params[1] {
+                        b"A" => {
+                            // Prompt start - shell is ready for input
+                            trace!("OSC 133;A - prompt ready");
+                            self.term.prompt_ready = true;
+                        }
+                        b"B" => {
+                            // Command start (user pressed enter)
+                            trace!("OSC 133;B - command start");
+                        }
+                        b"C" => {
+                            // Command output start
+                            trace!("OSC 133;C - output start");
+                        }
+                        b"D" => {
+                            // Command finished
+                            if params.len() >= 3 {
+                                if let Ok(code) = std::str::from_utf8(params[2]) {
+                                    trace!("OSC 133;D - command finished with code {}", code);
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }

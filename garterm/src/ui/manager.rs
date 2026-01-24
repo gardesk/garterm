@@ -90,6 +90,17 @@ impl TabManager {
         height: u32,
         cwd: Option<&std::path::Path>,
     ) -> Result<TabId> {
+        self.new_tab_with_command(width, height, cwd, None)
+    }
+
+    /// Create a new tab with an optional startup command
+    pub fn new_tab_with_command(
+        &mut self,
+        width: u32,
+        height: u32,
+        cwd: Option<&std::path::Path>,
+        startup_cmd: Option<&str>,
+    ) -> Result<TabId> {
         // After adding this tab, we'll have tabs.len() + 1 tabs
         let new_tab_count = self.tabs.len() + 1;
         let content_height = self.tab_bar.content_height(height, new_tab_count);
@@ -99,7 +110,9 @@ impl TabManager {
         let tab_id = TabId(self.next_tab_id);
         self.next_tab_id += 1;
 
-        let tab = Tab::new(tab_id, &self.shell, cols, rows, width, content_height, cwd)?;
+        let tab = Tab::new_with_command(
+            tab_id, &self.shell, cols, rows, width, content_height, cwd, startup_cmd
+        )?;
         self.tabs.insert(tab_id, tab);
         self.tab_order.push(tab_id);
         self.active_tab = tab_id;
@@ -160,13 +173,23 @@ impl TabManager {
         &mut self,
         cwd: Option<&std::path::Path>,
     ) -> Result<Option<PaneId>> {
+        self.split_horizontal_with_command(cwd, None)
+    }
+
+    /// Split the focused pane horizontally with an optional startup command
+    pub fn split_horizontal_with_command(
+        &mut self,
+        cwd: Option<&std::path::Path>,
+        startup_cmd: Option<&str>,
+    ) -> Result<Option<PaneId>> {
         if let Some(tab) = self.tabs.get_mut(&self.active_tab) {
-            let pane_id = tab.split(
+            let pane_id = tab.split_with_command(
                 super::split::SplitDirection::Horizontal,
                 &self.shell,
                 self.cell_width,
                 self.cell_height,
                 cwd,
+                startup_cmd,
             )?;
             Ok(Some(pane_id))
         } else {
@@ -179,13 +202,23 @@ impl TabManager {
         &mut self,
         cwd: Option<&std::path::Path>,
     ) -> Result<Option<PaneId>> {
+        self.split_vertical_with_command(cwd, None)
+    }
+
+    /// Split the focused pane vertically with an optional startup command
+    pub fn split_vertical_with_command(
+        &mut self,
+        cwd: Option<&std::path::Path>,
+        startup_cmd: Option<&str>,
+    ) -> Result<Option<PaneId>> {
         if let Some(tab) = self.tabs.get_mut(&self.active_tab) {
-            let pane_id = tab.split(
+            let pane_id = tab.split_with_command(
                 super::split::SplitDirection::Vertical,
                 &self.shell,
                 self.cell_width,
                 self.cell_height,
                 cwd,
+                startup_cmd,
             )?;
             Ok(Some(pane_id))
         } else {

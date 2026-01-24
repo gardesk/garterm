@@ -5,6 +5,18 @@
 use crate::pty::{Pty, PtySize};
 use crate::terminal::Terminal;
 use anyhow::Result;
+use std::time::{Duration, Instant};
+
+/// State for pending startup command
+#[derive(Debug)]
+enum StartupCmdState {
+    /// No pending command
+    None,
+    /// Waiting for shell prompt (OSC 133;A) or deadline
+    WaitingForPrompt { cmd: String, deadline: Instant },
+    /// Command has been sent
+    Sent,
+}
 
 /// Unique identifier for a pane
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -32,6 +44,8 @@ pub struct Pane {
     pub y: u32,
     /// Whether this pane is focused
     pub focused: bool,
+    /// Startup command state (for cmd parameter)
+    startup_cmd_state: StartupCmdState,
 }
 
 impl Pane {
@@ -64,7 +78,31 @@ impl Pane {
             x: 0,
             y: 0,
             focused: false,
+            startup_cmd_state: StartupCmdState::None,
         })
+    }
+
+    /// Create a new pane with an optional startup command
+    pub fn new_with_command(
+        id: PaneId,
+        shell: &str,
+        cols: usize,
+        rows: usize,
+        width: u32,
+        height: u32,
+        cwd: Option<&std::path::Path>,
+        startup_cmd: Option<&str>,
+    ) -> Result<Self> {
+        let mut pane = Self::new(id, shell, cols, rows, width, height, cwd)?;
+
+        if let Some(cmd) = startup_cmd {
+            pane.startup_cmd_state = StartupCmdState::WaitingForPrompt {
+                cmd: cmd.to_string(),
+                deadline: Instant::now() + Duration::from_millis(500),
+            };
+        }
+
+        Ok(pane)
     }
 
     /// Resize the pane
@@ -124,5 +162,35 @@ impl Pane {
     /// Mark terminal as needing redraw
     pub fn mark_dirty(&mut self) {
         self.terminal.mark_dirty();
+    }
+
+    /// Called when terminal receives OSC 133;A prompt marker
+    pub fn on_prompt_ready(&mut self) {
+        if let StartupCmdState::WaitingForPrompt { ref cmd, .. } = self.startup_cmd_state {
+            let cmd_with_newline = format!("{}\n", cmd);
+            if let Err(e) = self.write_pty(cmd_with_newline.as_bytes()) {
+                tracing::error!("Failed to send startup command: {}", e);
+            }
+            self.startup_cmd_state = StartupCmdState::Sent;
+        }
+    }
+
+    /// Check startup deadline and send command if timed out
+    pub fn check_startup_deadline(&mut self) {
+        if let StartupCmdState::WaitingForPrompt { ref cmd, deadline } = self.startup_cmd_state {
+            if Instant::now() >= deadline {
+                // Fallback: send anyway after timeout
+                let cmd_with_newline = format!("{}\n", cmd);
+                if let Err(e) = self.write_pty(cmd_with_newline.as_bytes()) {
+                    tracing::error!("Failed to send startup command (deadline): {}", e);
+                }
+                self.startup_cmd_state = StartupCmdState::Sent;
+            }
+        }
+    }
+
+    /// Check if there's a pending startup command
+    pub fn has_pending_startup_cmd(&self) -> bool {
+        matches!(self.startup_cmd_state, StartupCmdState::WaitingForPrompt { .. })
     }
 }
