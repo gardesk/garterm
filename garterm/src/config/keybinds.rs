@@ -39,6 +39,10 @@ impl Modifiers {
     pub fn ctrl_alt() -> Self {
         Self { ctrl: true, alt: true, ..Default::default() }
     }
+
+    pub fn ctrl_shift_alt() -> Self {
+        Self { ctrl: true, shift: true, alt: true, ..Default::default() }
+    }
 }
 
 impl std::fmt::Display for Modifiers {
@@ -305,6 +309,15 @@ impl KeybindSet {
 
         // Misc
         set.add(Keybind::new(Modifiers::ctrl_shift(), "r", Action::ReloadConfig));
+        set.add(Keybind::new(Modifiers::none(), "f11", Action::ToggleFullscreen));
+        set.add(Keybind::new(Modifiers::ctrl_shift(), "delete", Action::ResetTerminal));
+        set.add(Keybind::new(Modifiers::ctrl_shift(), "k", Action::ClearScrollback));
+
+        // Pane resize (Ctrl+Shift+Alt+Arrow)
+        set.add(Keybind::new(Modifiers::ctrl_shift_alt(), "left", Action::ResizeLeft(5)));
+        set.add(Keybind::new(Modifiers::ctrl_shift_alt(), "right", Action::ResizeRight(5)));
+        set.add(Keybind::new(Modifiers::ctrl_shift_alt(), "up", Action::ResizeUp(5)));
+        set.add(Keybind::new(Modifiers::ctrl_shift_alt(), "down", Action::ResizeDown(5)));
 
         set
     }
