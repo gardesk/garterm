@@ -194,6 +194,48 @@ audio = false
 # audio_command = "paplay /usr/share/sounds/freedesktop/stereo/bell.oga"
 
 #==============================================================================
+# TAB BAR
+#==============================================================================
+[tab_bar]
+# Tab bar height in pixels
+height = 24
+
+# Tab bar position: "top" or "bottom"
+position = "top"
+
+# Show tab bar even with only one tab
+# When false, tab bar only appears with 2+ tabs
+show_single_tab = false
+
+# Maximum width of each tab in pixels
+# Tabs shrink proportionally when many are open, but never exceed this
+max_tab_width = 200.0
+
+# Horizontal padding inside each tab (total, split between left and right)
+tab_padding = 16.0
+
+# Shorten long paths in tab titles
+# e.g., "/home/user/Projects/app/src" → "~/P/a/src"
+shorten_paths = true
+
+# Colors are specified as [R, G, B, A] arrays with values 0.0 to 1.0
+#
+# Tab bar background (behind all tabs)
+background = [0.08, 0.08, 0.12, 1.0]
+
+# Active (focused) tab background
+active_bg = [0.15, 0.15, 0.20, 1.0]
+
+# Inactive tab backgrounds
+inactive_bg = [0.10, 0.10, 0.14, 1.0]
+
+# Active tab text color
+active_fg = [1.0, 1.0, 1.0, 1.0]
+
+# Inactive tab text color
+inactive_fg = [0.7, 0.7, 0.7, 1.0]
+
+#==============================================================================
 # KEYBINDINGS
 #==============================================================================
 # Format: "modifiers+key" = "action"
@@ -263,6 +305,22 @@ audio = false
 #       shell = "/bin/zsh",
 #       font = { family = "JetBrains Mono", size = 12.0 },
 #       colors = { preset = "catppuccin" },
+#
+#       -- Tab bar configuration
+#       tab_bar = {
+#           height = 28,
+#           position = "top",        -- "top" or "bottom"
+#           show_single_tab = false,
+#           shorten_paths = true,
+#           max_tab_width = 200,
+#           tab_padding = 16,
+#           -- Colors as {R, G, B, A} with values 0.0 to 1.0
+#           background = {0.08, 0.08, 0.12, 1.0},
+#           active_bg = {0.2, 0.2, 0.3, 1.0},
+#           inactive_bg = {0.1, 0.1, 0.15, 1.0},
+#           active_fg = {1.0, 1.0, 1.0, 1.0},
+#           inactive_fg = {0.6, 0.6, 0.6, 1.0},
+#       },
 #   }
 #
 # Sessions (declarative workspaces):
