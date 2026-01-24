@@ -257,16 +257,18 @@ impl Renderer {
         });
 
         // Create vertex/index buffers
+        // Size calculation: 300 cols × 100 rows × 4 quads/cell × 4 verts × 36 bytes = ~17MB
+        // Use 16MB for vertices and 8MB for indices to support large/high-DPI displays
         let vertex_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("vertex_buffer"),
-            size: 1024 * 1024, // 1MB
+            size: 16 * 1024 * 1024, // 16MB
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
         let index_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("index_buffer"),
-            size: 512 * 1024, // 512KB
+            size: 8 * 1024 * 1024, // 8MB
             usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -991,15 +993,25 @@ impl Renderer {
                         bg_color,
                         0.0,
                     );
-                } else if cell.bg != CellColor::Default {
+                } else if cell.bg != CellColor::Default && cell.bg != CellColor::Indexed(0) {
+                    // Skip Default and Indexed(0) - ANSI black as background typically means
+                    // "use terminal background" in ncurses/TUI apps
                     let bg_color = self.color_to_rgba(&cell.bg, false);
-                    self.add_quad(
-                        to_ndc_x(x), to_ndc_y(y),
-                        to_ndc_x(x + cell_w), to_ndc_y(y + cell_h),
-                        0.0, 0.0, 0.0, 0.0,
-                        bg_color,
-                        0.0,
-                    );
+                    let default_bg = self.colors.background.to_rgba();
+                    // Skip if background is close to terminal default (handles editor themes
+                    // that set their own "background" color)
+                    let is_similar = (bg_color[0] - default_bg[0]).abs() < 0.15
+                        && (bg_color[1] - default_bg[1]).abs() < 0.15
+                        && (bg_color[2] - default_bg[2]).abs() < 0.15;
+                    if !is_similar {
+                        self.add_quad(
+                            to_ndc_x(x), to_ndc_y(y),
+                            to_ndc_x(x + cell_w), to_ndc_y(y + cell_h),
+                            0.0, 0.0, 0.0, 0.0,
+                            bg_color,
+                            0.0,
+                        );
+                    }
                 }
 
                 // Character (if not space or null)
