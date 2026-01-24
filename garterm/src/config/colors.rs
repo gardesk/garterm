@@ -409,6 +409,98 @@ impl Default for ColorPalette {
     }
 }
 
+/// Optional color overrides that can be merged on top of a preset
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ColorOverrides {
+    pub foreground: Option<Color>,
+    pub background: Option<Color>,
+    pub cursor: Option<Color>,
+    pub cursor_text: Option<Color>,
+    pub selection: Option<Color>,
+    pub selection_text: Option<Color>,
+
+    pub black: Option<Color>,
+    pub red: Option<Color>,
+    pub green: Option<Color>,
+    pub yellow: Option<Color>,
+    pub blue: Option<Color>,
+    pub magenta: Option<Color>,
+    pub cyan: Option<Color>,
+    pub white: Option<Color>,
+
+    pub bright_black: Option<Color>,
+    pub bright_red: Option<Color>,
+    pub bright_green: Option<Color>,
+    pub bright_yellow: Option<Color>,
+    pub bright_blue: Option<Color>,
+    pub bright_magenta: Option<Color>,
+    pub bright_cyan: Option<Color>,
+    pub bright_white: Option<Color>,
+}
+
+impl ColorOverrides {
+    /// Check if any overrides are set
+    pub fn has_any(&self) -> bool {
+        self.foreground.is_some()
+            || self.background.is_some()
+            || self.cursor.is_some()
+            || self.cursor_text.is_some()
+            || self.selection.is_some()
+            || self.selection_text.is_some()
+            || self.black.is_some()
+            || self.red.is_some()
+            || self.green.is_some()
+            || self.yellow.is_some()
+            || self.blue.is_some()
+            || self.magenta.is_some()
+            || self.cyan.is_some()
+            || self.white.is_some()
+            || self.bright_black.is_some()
+            || self.bright_red.is_some()
+            || self.bright_green.is_some()
+            || self.bright_yellow.is_some()
+            || self.bright_blue.is_some()
+            || self.bright_magenta.is_some()
+            || self.bright_cyan.is_some()
+            || self.bright_white.is_some()
+    }
+
+    /// Merge these overrides into a base palette
+    pub fn apply_to(&self, base: &mut ColorPalette) {
+        macro_rules! apply_override {
+            ($field:ident) => {
+                if let Some(ref color) = self.$field {
+                    base.$field = color.clone();
+                }
+            };
+        }
+
+        apply_override!(foreground);
+        apply_override!(background);
+        apply_override!(cursor);
+        apply_override!(cursor_text);
+        apply_override!(selection);
+        apply_override!(selection_text);
+        apply_override!(black);
+        apply_override!(red);
+        apply_override!(green);
+        apply_override!(yellow);
+        apply_override!(blue);
+        apply_override!(magenta);
+        apply_override!(cyan);
+        apply_override!(white);
+        apply_override!(bright_black);
+        apply_override!(bright_red);
+        apply_override!(bright_green);
+        apply_override!(bright_yellow);
+        apply_override!(bright_blue);
+        apply_override!(bright_magenta);
+        apply_override!(bright_cyan);
+        apply_override!(bright_white);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

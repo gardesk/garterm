@@ -32,7 +32,7 @@ pub mod keybinds;
 pub mod lua;
 pub mod runtime;
 
-pub use colors::{Color, ColorPalette};
+pub use colors::{Color, ColorOverrides, ColorPalette};
 pub use keybinds::{Action, Keybind, KeybindSet, Modifiers};
 pub use runtime::{LuaRuntime, LuaState, LuaKeybind, TerminalCommand, Session, SessionTab, SessionSplit, expand_tilde};
 
@@ -224,29 +224,39 @@ pub struct ColorsConfig {
 
     /// Custom color overrides (applied on top of preset)
     #[serde(flatten)]
-    pub palette: ColorPalette,
+    pub overrides: ColorOverrides,
 }
 
 impl Default for ColorsConfig {
     fn default() -> Self {
         Self {
             preset: Some("tokyo-night".into()),
-            palette: ColorPalette::default(),
+            overrides: ColorOverrides::default(),
         }
     }
 }
 
 impl ColorsConfig {
-    /// Resolve to final ColorPalette
+    /// Resolve to final ColorPalette by merging overrides into preset
     pub fn resolve(&self) -> ColorPalette {
-        if let Some(preset_name) = &self.preset {
+        let mut palette = if let Some(preset_name) = &self.preset {
             if let Some(preset) = ColorPalette::from_preset(preset_name) {
-                // TODO: merge self.palette overrides on top of preset
-                return preset;
+                preset
+            } else {
+                tracing::warn!("Unknown color preset '{}', using default", preset_name);
+                ColorPalette::default()
             }
-            tracing::warn!("Unknown color preset '{}', using default", preset_name);
+        } else {
+            ColorPalette::default()
+        };
+
+        // Apply any overrides on top of the preset
+        if self.overrides.has_any() {
+            tracing::debug!("Applying color overrides on top of preset");
+            self.overrides.apply_to(&mut palette);
         }
-        self.palette.clone()
+
+        palette
     }
 }
 

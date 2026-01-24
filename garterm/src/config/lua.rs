@@ -158,8 +158,8 @@ fn parse_terminal_table(table: &mlua::Table) -> Config {
         if let Ok(preset) = colors.get::<String>("preset") {
             config.colors.preset = Some(preset);
         }
-        // Individual color overrides would be parsed here
-        parse_color_table(&colors, &mut config.colors.palette);
+        // Individual color overrides
+        parse_color_table(&colors, &mut config.colors.overrides);
     }
 
     // Cursor settings (often under colors in Lua configs)
@@ -256,11 +256,11 @@ fn parse_color_array(table: &mlua::Table, key: &str) -> Result<[f32; 4], mlua::E
 }
 
 /// Parse color values from Lua table
-fn parse_color_table(table: &mlua::Table, palette: &mut super::ColorPalette) {
+fn parse_color_table(table: &mlua::Table, overrides: &mut super::ColorOverrides) {
     macro_rules! parse_color {
         ($name:ident) => {
             if let Ok(hex) = table.get::<String>(stringify!($name)) {
-                palette.$name = super::Color::hex(hex);
+                overrides.$name = Some(super::Color::hex(hex));
             }
         };
     }
