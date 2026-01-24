@@ -65,3 +65,6 @@ pollster = "0.4"
 # X11 (for stream access)
 x11rb = "0.13"
 x11-dl = "2"
+
+# System
+libc = "0.2"

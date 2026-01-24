@@ -35,6 +35,16 @@ pub enum Command {
     Reload,
     /// Quit daemon
     Quit,
+    /// Ping to check if instance is alive
+    Ping,
+}
+
+/// Information about a garterm window instance
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WindowInfo {
+    pub pid: u32,
+    pub tabs: usize,
+    pub focused: bool,
 }
 
 /// Response from garterm daemon

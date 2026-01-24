@@ -14,6 +14,7 @@ path = "src/main.rs"
 garterm-ipc.workspace = true
 gartk-core.workspace = true
 gartk-x11.workspace = true
+libc.workspace = true
 
 vte.workspace = true
 wgpu.workspace = true

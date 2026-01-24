@@ -644,6 +644,9 @@ impl App {
                 self.running = false;
                 Response::ok()
             }
+            Command::Ping => {
+                Response::ok()
+            }
             Command::NewWindow { .. } | Command::ResizePane { .. } => {
                 Response::error("Not implemented")
             }
@@ -760,6 +763,10 @@ impl App {
 
                 Event::FocusIn(_) => {
                     tracing::debug!("FocusIn event");
+                    // Mark this window as focused for IPC targeting
+                    if let Some(ref ipc) = self.ipc {
+                        let _ = ipc.mark_focused();
+                    }
                     if let Some(pane) = self.tabs.focused_pane_mut() {
                         pane.mark_dirty();
                     }
