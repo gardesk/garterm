@@ -501,16 +501,12 @@ impl Renderer {
                 0.0,
             );
 
-            // Tab title text (render each character)
+            // Tab title text (render each character using configured color)
             self.render_text_at(
                 &tab.title,
                 tab.title_x,
                 tab.title_y + self.fonts.baseline(),
-                if tab.is_active {
-                    [1.0, 1.0, 1.0, 1.0]
-                } else {
-                    [0.7, 0.7, 0.7, 1.0]
-                },
+                tab.fg_color,
             );
         }
     }

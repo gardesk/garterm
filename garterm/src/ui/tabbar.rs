@@ -185,7 +185,7 @@ impl TabBar {
         &self,
         tabs: &[(TabId, String, bool)], // (id, title, is_active)
         width: u32,
-        _height: u32,
+        height: u32,
         cell_width: f32,
         cell_height: f32,
     ) -> TabBarRenderData {
@@ -197,10 +197,17 @@ impl TabBar {
 
         let mut data = TabBarRenderData::default();
 
+        // Y position: top of window or bottom
+        let bar_y = if self.top {
+            0.0
+        } else {
+            height as f32 - self.height as f32
+        };
+
         // Background color from config
         data.background = Some(TabRect {
             x: 0.0,
-            y: 0.0,
+            y: bar_y,
             width: width as f32,
             height: self.height as f32,
             color: self.background,
@@ -237,14 +244,14 @@ impl TabBar {
                 id: *id,
                 rect: TabRect {
                     x,
-                    y: 0.0,
+                    y: bar_y,
                     width: tab_width,
                     height: self.height as f32,
                     color: bg_color,
                 },
                 title: display_title,
                 title_x: x + half_padding,
-                title_y: (self.height as f32 - cell_height) / 2.0,
+                title_y: bar_y + (self.height as f32 - cell_height) / 2.0,
                 is_active: *is_active,
                 fg_color,
             });
