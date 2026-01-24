@@ -1,0 +1,17 @@
+[package]
+name = "gartermctl"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "CLI control client for garterm"
+
+[[bin]]
+name = "gartermctl"
+path = "src/main.rs"
+
+[dependencies]
+garterm-ipc.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true

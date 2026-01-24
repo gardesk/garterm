@@ -1,0 +1,21 @@
+[package]
+name = "garterm"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "GPU-accelerated terminal emulator for gardesk"
+
+[[bin]]
+name = "garterm"
+path = "src/main.rs"
+
+[dependencies]
+garterm-ipc.workspace = true
+
+nix.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
