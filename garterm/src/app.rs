@@ -204,9 +204,15 @@ impl App {
             }
 
             // Check for exited panes
-            self.tabs.handle_exits();
+            let panes_closed = self.tabs.handle_exits();
             if !self.tabs.has_tabs() {
                 self.running = false;
+            }
+
+            // Relayout and redraw if panes were closed
+            if panes_closed && self.running {
+                self.tabs.relayout(self.width, self.height)?;
+                self.tabs.mark_all_dirty();
             }
 
             // Render all panes in the active tab
@@ -221,6 +227,9 @@ impl App {
                         pane.take_dirty();
                     }
                 }
+
+                // Update tab titles from terminal OSC sequences
+                self.tabs.update_titles();
 
                 // Get tab bar render data
                 let tab_bar_data = self.tabs.render_tab_bar(self.width, self.height);
@@ -468,17 +477,18 @@ impl App {
                     info!("Creating new tab");
                     self.tabs.new_tab(self.width, self.height, self.cwd.as_deref())?;
                     info!("Tab created, now have {} tabs", self.tabs.tab_count());
-                    if let Some(pane) = self.tabs.focused_pane_mut() {
-                        pane.mark_dirty();
-                    }
+                    // Relayout all tabs (tab bar may have appeared)
+                    self.tabs.relayout(self.width, self.height)?;
+                    self.tabs.mark_all_dirty();
                     return Ok(());
                 }
                 // Close pane: Alt+W
                 Key::Char('w') | Key::Char('W') => {
                     info!("Closing pane");
-                    self.tabs.close_pane();
-                    if let Some(pane) = self.tabs.focused_pane_mut() {
-                        pane.mark_dirty();
+                    if self.tabs.close_pane() {
+                        // Relayout remaining panes to fill the space
+                        self.tabs.relayout(self.width, self.height)?;
+                        self.tabs.mark_all_dirty();
                     }
                     return Ok(());
                 }
@@ -566,6 +576,12 @@ impl App {
 
     fn handle_button_press(&mut self, event: xproto::ButtonPressEvent) -> Result<()> {
         let (cell_w, cell_h) = self.renderer.cell_size();
+
+        // Check for tab bar click first (left click only)
+        if event.detail == 1 && self.tabs.handle_click(event.event_x, event.event_y, self.width) {
+            return Ok(());
+        }
+
         let col = (event.event_x as f32 / cell_w) as usize;
         let row = (event.event_y as f32 / cell_h) as usize;
 

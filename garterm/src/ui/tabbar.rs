@@ -36,8 +36,9 @@ impl TabBar {
     }
 
     /// Get the Y offset for terminal content
-    pub fn content_offset(&self) -> u32 {
-        if self.visible && self.top {
+    /// Tab bar is hidden for single tab, so offset is 0 in that case
+    pub fn content_offset(&self, tab_count: usize) -> u32 {
+        if self.visible && self.top && tab_count > 1 {
             self.height
         } else {
             0
@@ -45,8 +46,9 @@ impl TabBar {
     }
 
     /// Get available height for terminal content
-    pub fn content_height(&self, total_height: u32) -> u32 {
-        if self.visible {
+    /// Tab bar is hidden for single tab, so full height is available
+    pub fn content_height(&self, total_height: u32, tab_count: usize) -> u32 {
+        if self.visible && tab_count > 1 {
             total_height.saturating_sub(self.height)
         } else {
             total_height
@@ -55,6 +57,7 @@ impl TabBar {
 
     /// Generate vertices for tab bar background and tabs
     /// Returns (vertices, indices) for rendering
+    /// Tab bar is hidden when there's only one tab
     pub fn render(
         &self,
         tabs: &[(TabId, String, bool)], // (id, title, is_active)
@@ -62,7 +65,8 @@ impl TabBar {
         _height: u32,
         cell_width: f32,
     ) -> TabBarRenderData {
-        if !self.visible || tabs.is_empty() {
+        // Hide tab bar if not visible, no tabs, or only one tab
+        if !self.visible || tabs.len() <= 1 {
             return TabBarRenderData::default();
         }
 

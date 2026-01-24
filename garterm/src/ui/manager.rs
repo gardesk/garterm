@@ -41,7 +41,8 @@ impl TabManager {
         cwd: Option<&std::path::Path>,
     ) -> Result<Self> {
         let tab_bar = TabBar::new();
-        let content_height = tab_bar.content_height(height);
+        // Initial tab: only 1 tab, so full height available (no tab bar)
+        let content_height = tab_bar.content_height(height, 1);
         let content_rows = (content_height as f32 / cell_height) as usize;
 
         let tab_id = TabId(0);
@@ -89,7 +90,9 @@ impl TabManager {
         height: u32,
         cwd: Option<&std::path::Path>,
     ) -> Result<TabId> {
-        let content_height = self.tab_bar.content_height(height);
+        // After adding this tab, we'll have tabs.len() + 1 tabs
+        let new_tab_count = self.tabs.len() + 1;
+        let content_height = self.tab_bar.content_height(height, new_tab_count);
         let cols = (width as f32 / self.cell_width) as usize;
         let rows = (content_height as f32 / self.cell_height) as usize;
 
@@ -208,7 +211,7 @@ impl TabManager {
 
     /// Focus pane in direction
     pub fn focus_direction(&mut self, direction: Direction, width: u32, height: u32) {
-        let content_height = self.tab_bar.content_height(height);
+        let content_height = self.tab_bar.content_height(height, self.tabs.len());
         if let Some(tab) = self.tabs.get_mut(&self.active_tab) {
             tab.focus_direction(direction, width, content_height);
         }
@@ -216,7 +219,7 @@ impl TabManager {
 
     /// Relayout all panes after resize
     pub fn relayout(&mut self, width: u32, height: u32) -> Result<()> {
-        let content_height = self.tab_bar.content_height(height);
+        let content_height = self.tab_bar.content_height(height, self.tabs.len());
         for tab in self.tabs.values_mut() {
             tab.relayout(width, content_height, self.cell_width, self.cell_height)?;
         }
@@ -243,9 +246,44 @@ impl TabManager {
         self.tab_bar.render(&tabs, width, height, self.cell_width)
     }
 
+    /// Handle a click at pixel coordinates
+    /// Returns true if the click was in the tab bar and handled
+    pub fn handle_click(&mut self, x: i16, y: i16, width: u32) -> bool {
+        // Only handle if tab bar is visible (more than 1 tab)
+        if self.tabs.len() <= 1 {
+            return false;
+        }
+
+        // Check if click is in tab bar area
+        let tab_bar_height = self.tab_bar.height;
+        if y < 0 || y as u32 >= tab_bar_height {
+            return false;
+        }
+
+        // Find which tab was clicked
+        let tab_count = self.tab_order.len() as f32;
+        let max_tab_width = 200.0f32;
+        let tab_width = (width as f32 / tab_count).min(max_tab_width);
+
+        let click_x = x as f32;
+        let tab_index = (click_x / tab_width) as usize;
+
+        if tab_index < self.tab_order.len() {
+            let tab_id = self.tab_order[tab_index];
+            if tab_id != self.active_tab {
+                self.switch_to(tab_id);
+                self.mark_all_dirty();
+            }
+            true
+        } else {
+            false
+        }
+    }
+
     /// Get content Y offset (below tab bar)
+    /// Returns 0 if only one tab (tab bar hidden)
     pub fn content_offset(&self) -> u32 {
-        self.tab_bar.content_offset()
+        self.tab_bar.content_offset(self.tabs.len())
     }
 
     /// Check for exited panes in all tabs
@@ -260,8 +298,12 @@ impl TabManager {
     }
 
     /// Handle exited panes (close them)
-    pub fn handle_exits(&mut self) {
-        for (tab_id, pane_id) in self.check_exits() {
+    /// Returns true if any pane or tab was closed (caller should relayout)
+    pub fn handle_exits(&mut self) -> bool {
+        let exits = self.check_exits();
+        let had_exits = !exits.is_empty();
+
+        for (tab_id, pane_id) in exits {
             if let Some(tab) = self.tabs.get_mut(&tab_id) {
                 if tab.panes.len() > 1 {
                     tab.close_pane(pane_id);
@@ -278,6 +320,8 @@ impl TabManager {
             .map(|(id, _)| *id)
             .collect();
 
+        let had_empty = !empty_tabs.is_empty();
+
         for id in empty_tabs {
             if self.tabs.len() > 1 {
                 self.tabs.remove(&id);
@@ -285,6 +329,17 @@ impl TabManager {
                 if self.active_tab == id && !self.tab_order.is_empty() {
                     self.active_tab = self.tab_order[0];
                 }
+            }
+        }
+
+        had_exits || had_empty
+    }
+
+    /// Mark all panes in active tab as dirty
+    pub fn mark_all_dirty(&mut self) {
+        if let Some(tab) = self.tabs.get_mut(&self.active_tab) {
+            for pane in tab.panes.values_mut() {
+                pane.mark_dirty();
             }
         }
     }
