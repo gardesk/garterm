@@ -30,8 +30,13 @@ struct Cli {
 }
 
 fn main() -> Result<()> {
+    // Set up file logging
+    let log_file = std::fs::File::create("/tmp/garterm.log")
+        .expect("Failed to create log file");
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
+        .with_writer(std::sync::Mutex::new(log_file))
+        .with_ansi(false)
         .init();
 
     let cli = Cli::parse();

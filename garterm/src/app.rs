@@ -53,23 +53,51 @@ impl App {
                 .title("garterm")
                 .class("garterm")
                 .size(width, height)
-                .background(0xFF1a1b26), // Dark background
+                .background(0x1a1b26), // Dark background (matching terminal)
         )?;
 
         info!("Created window {}x{}", width, height);
 
-        // Create renderer (opens its own Xlib connection for wgpu)
+        // Wait for ConfigureNotify to get actual window size from WM
+        // The WM may resize the window after mapping, so we need to wait for that
+        let mut actual_width = width;
+        let mut actual_height = height;
+
+        // Poll for events with a short timeout to catch WM resize
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        let timeout = Duration::from_millis(100);
+
+        while start.elapsed() < timeout {
+            conn.flush()?;
+            if let Some(event) = conn.poll_event()? {
+                if let x11rb::protocol::Event::ConfigureNotify(e) = event {
+                    if e.window == window.id() {
+                        actual_width = e.width as u32;
+                        actual_height = e.height as u32;
+                        info!("Got ConfigureNotify: {}x{}", actual_width, actual_height);
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        if actual_width != width || actual_height != height {
+            info!("Window resized by WM to {}x{}", actual_width, actual_height);
+        }
+
+        // Create renderer with actual window size
         let renderer = Renderer::new(
             window.id(),
-            width,
-            height,
+            actual_width,
+            actual_height,
             font_size,
         ).await?;
 
         // Calculate actual cell size from loaded fonts
         let (cell_w, cell_h) = renderer.cell_size();
-        let cols = (width as f32 / cell_w) as usize;
-        let rows = (height as f32 / cell_h) as usize;
+        let cols = (actual_width as f32 / cell_w) as usize;
+        let rows = (actual_height as f32 / cell_h) as usize;
 
         info!("Terminal size: {}x{} (cell: {}x{})", cols, rows, cell_w, cell_h);
 
@@ -80,8 +108,8 @@ impl App {
         let pty_size = PtySize {
             rows: rows as u16,
             cols: cols as u16,
-            pixel_width: width as u16,
-            pixel_height: height as u16,
+            pixel_width: actual_width as u16,
+            pixel_height: actual_height as u16,
         };
         let pty = Pty::spawn(shell, pty_size, cwd)?;
 
@@ -225,24 +253,29 @@ impl App {
                     let width = e.width as u32;
                     let height = e.height as u32;
 
-                    self.renderer.resize(width, height);
+                    // Only process if size actually changed
+                    if self.renderer.size() != (width, height) {
+                        self.renderer.resize(width, height);
 
-                    let (cell_w, cell_h) = self.renderer.cell_size();
-                    let cols = (width as f32 / cell_w) as usize;
-                    let rows = (height as f32 / cell_h) as usize;
+                        let (cell_w, cell_h) = self.renderer.cell_size();
+                        let cols = (width as f32 / cell_w) as usize;
+                        let rows = (height as f32 / cell_h) as usize;
 
-                    if cols != self.terminal.cols() || rows != self.terminal.rows() {
-                        self.terminal.resize(cols, rows);
-                        self.pty.resize(PtySize {
-                            rows: rows as u16,
-                            cols: cols as u16,
-                            pixel_width: width as u16,
-                            pixel_height: height as u16,
-                        })?;
-                        info!("Resized to {}x{}", cols, rows);
+                        if cols != self.terminal.cols() || rows != self.terminal.rows() {
+                            self.terminal.resize(cols, rows);
+                            self.pty.resize(PtySize {
+                                rows: rows as u16,
+                                cols: cols as u16,
+                                pixel_width: width as u16,
+                                pixel_height: height as u16,
+                            })?;
+                            info!("Resized to {}x{}", cols, rows);
+                        }
+
+                        // Force immediate re-render after resize to clear stale content
+                        self.terminal.mark_dirty();
+                        self.renderer.render(&self.terminal)?;
                     }
-
-                    self.terminal.mark_dirty();
                 }
 
                 Event::KeyPress(e) => {
@@ -286,14 +319,25 @@ impl App {
                 }
 
                 Event::FocusIn(_) => {
-                    // Could send focus event to terminal if mode enabled
+                    tracing::debug!("FocusIn event");
+                    self.terminal.mark_dirty();
                 }
 
                 Event::FocusOut(_) => {
-                    // Could send focus event to terminal if mode enabled
+                    tracing::debug!("FocusOut event");
                 }
 
-                _ => {}
+                Event::EnterNotify(e) => {
+                    tracing::debug!("EnterNotify at ({}, {})", e.event_x, e.event_y);
+                }
+
+                Event::LeaveNotify(_) => {
+                    tracing::debug!("LeaveNotify");
+                }
+
+                _ => {
+                    tracing::trace!("Unhandled event: {:?}", event);
+                }
             }
         }
 

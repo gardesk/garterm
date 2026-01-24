@@ -205,6 +205,11 @@ impl Renderer {
         self.fonts.cell_size()
     }
 
+    /// Get current surface size
+    pub fn size(&self) -> (u32, u32) {
+        self.gpu.size()
+    }
+
     /// Resize the renderer
     pub fn resize(&mut self, width: u32, height: u32) {
         self.gpu.resize(width, height);
@@ -214,6 +219,7 @@ impl Renderer {
     pub fn render(&mut self, terminal: &Terminal) -> Result<(), GpuError> {
         // Update atlas if dirty
         if self.atlas.is_dirty() {
+            tracing::debug!("Uploading atlas texture");
             self.gpu.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: &self.atlas_texture,
@@ -239,6 +245,14 @@ impl Renderer {
         // Build vertex data
         self.build_vertices(terminal);
 
+        tracing::debug!(
+            "Rendering: {} vertices, {} indices, surface {}x{}",
+            self.vertices.len(),
+            self.indices.len(),
+            self.gpu.size().0,
+            self.gpu.size().1
+        );
+
         // Upload vertex data
         self.gpu.queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
         self.gpu.queue.write_buffer(&self.index_buffer, 0, bytemuck::cast_slice(&self.indices));
@@ -259,9 +273,12 @@ impl Renderer {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.1,
-                            g: 0.1,
-                            b: 0.12,
+                            // 0x1a1b26 converted from sRGB to linear space
+                            // sRGB values: (26/255, 27/255, 38/255) = (0.102, 0.106, 0.149)
+                            // Linear = sRGB / 12.92 for small values
+                            r: 0.0079,
+                            g: 0.0082,
+                            b: 0.0115,
                             a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,

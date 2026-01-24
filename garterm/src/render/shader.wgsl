@@ -34,7 +34,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if (in.is_glyph > 0.5) {
         // Glyph rendering - sample alpha from atlas
         let alpha = textureSample(atlas_texture, atlas_sampler, in.uv).r;
-        return vec4<f32>(in.color.rgb, in.color.a * alpha);
+        // Discard fully transparent pixels to avoid blending issues
+        if (alpha < 0.01) {
+            discard;
+        }
+        return vec4<f32>(in.color.rgb, alpha);
     } else {
         // Solid color (backgrounds, cursor)
         return in.color;
