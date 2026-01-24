@@ -60,6 +60,11 @@ impl Line {
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Cell> {
         self.cells.iter_mut()
     }
+
+    /// Get the text content of this line (for search)
+    pub fn text(&self) -> String {
+        self.cells.iter().map(|c| c.c).collect()
+    }
 }
 
 impl Index<usize> for Line {
@@ -337,6 +342,132 @@ impl Grid {
             self.lines.insert(bottom, Line::new(self.cols));
         }
     }
+
+    /// Search for matches in all lines (scrollback + active).
+    /// Returns matches as (absolute_row, col_start, col_end) where:
+    /// - absolute_row is 0 at the start of scrollback, incrementing through active lines
+    /// - col_start is inclusive, col_end is exclusive
+    pub fn search(&self, query: &str, case_insensitive: bool) -> Vec<SearchMatch> {
+        let mut matches = Vec::new();
+
+        if query.is_empty() {
+            return matches;
+        }
+
+        let search_query = if case_insensitive {
+            query.to_lowercase()
+        } else {
+            query.to_string()
+        };
+
+        // Search scrollback lines
+        for (row, line) in self.scrollback.iter().enumerate() {
+            let text = line.text();
+            let search_text = if case_insensitive {
+                text.to_lowercase()
+            } else {
+                text.clone()
+            };
+
+            let mut start = 0;
+            while let Some(pos) = search_text[start..].find(&search_query) {
+                let col = start + pos;
+                matches.push(SearchMatch {
+                    row,
+                    col_start: col,
+                    col_end: col + query.len(),
+                });
+                start = col + 1;
+            }
+        }
+
+        // Search active lines
+        let scrollback_len = self.scrollback.len();
+        for (row, line) in self.lines.iter().enumerate() {
+            let text = line.text();
+            let search_text = if case_insensitive {
+                text.to_lowercase()
+            } else {
+                text.clone()
+            };
+
+            let mut start = 0;
+            while let Some(pos) = search_text[start..].find(&search_query) {
+                let col = start + pos;
+                matches.push(SearchMatch {
+                    row: scrollback_len + row,
+                    col_start: col,
+                    col_end: col + query.len(),
+                });
+                start = col + 1;
+            }
+        }
+
+        matches
+    }
+
+    /// Get the total number of lines (scrollback + active)
+    pub fn total_lines(&self) -> usize {
+        self.scrollback.len() + self.rows
+    }
+
+    /// Convert a visible row (in viewport) to an absolute row number
+    pub fn visible_row_to_absolute(&self, visible_row: usize) -> usize {
+        let scrollback_len = self.scrollback.len();
+        let scrollback_visible = self.scroll_offset.min(scrollback_len);
+        let scrollback_start = scrollback_len.saturating_sub(scrollback_visible);
+
+        if visible_row < scrollback_visible {
+            // In scrollback portion of viewport
+            scrollback_start + visible_row
+        } else {
+            // In active display portion
+            let active_row = visible_row - scrollback_visible;
+            scrollback_len + active_row
+        }
+    }
+
+    /// Convert an absolute row to a visible row, if it's in the viewport
+    pub fn absolute_row_to_visible(&self, abs_row: usize) -> Option<usize> {
+        let scrollback_len = self.scrollback.len();
+        let scrollback_visible = self.scroll_offset.min(scrollback_len);
+        let scrollback_start = scrollback_len.saturating_sub(scrollback_visible);
+
+        if abs_row < scrollback_len {
+            // Row is in scrollback
+            if abs_row >= scrollback_start && abs_row < scrollback_start + scrollback_visible {
+                Some(abs_row - scrollback_start)
+            } else {
+                None // Not in viewport
+            }
+        } else {
+            // Row is in active display
+            let active_row = abs_row - scrollback_len;
+            let active_skip = if self.scroll_offset > scrollback_len {
+                self.scroll_offset - scrollback_len
+            } else {
+                0
+            };
+            let active_visible = self.rows - scrollback_visible;
+
+            if active_row >= active_skip && active_row < active_skip + active_visible {
+                Some(scrollback_visible + (active_row - active_skip))
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// A search match in the terminal grid
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchMatch {
+    /// Absolute row number (0 = start of scrollback)
+    pub row: usize,
+    /// Column start (inclusive)
+    pub col_start: usize,
+    /// Column end (exclusive)
+    pub col_end: usize,
 }
 
 impl Index<usize> for Grid {

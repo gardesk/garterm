@@ -5,7 +5,7 @@ mod modes;
 
 pub use cell::{Cell, CellAttrs, CellColor, UnderlineStyle};
 pub use cursor::{Cursor, CursorStyle};
-pub use grid::{Grid, Line};
+pub use grid::{Grid, Line, SearchMatch};
 pub use modes::{MouseEncoding, MouseMode, TerminalModes};
 
 /// Clipboard selection type
