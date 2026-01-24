@@ -146,6 +146,11 @@ impl Terminal {
         std::mem::replace(&mut self.dirty, false)
     }
 
+    /// Check if terminal is dirty (needs re-render)
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
     /// Mark terminal as dirty
     pub fn mark_dirty(&mut self) {
         self.dirty = true;

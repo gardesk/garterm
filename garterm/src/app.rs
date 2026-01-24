@@ -1,8 +1,8 @@
 use crate::config::Config;
 use crate::input::{Clipboard, KeyboardHandler, MouseButton, MouseEvent, MouseHandler, Selection, SelectionMode};
-use crate::pty::{Pty, PtySize, ReceivedSignal, SignalHandler};
+use crate::pty::{PtySize, ReceivedSignal, SignalHandler};
 use crate::render::Renderer;
-use crate::terminal::Terminal;
+use crate::ui::{Direction, TabManager};
 use anyhow::Result;
 use gartk_x11::{Connection, Window, WindowConfig};
 use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
@@ -14,8 +14,7 @@ use x11rb::protocol::xproto;
 pub struct App {
     window: Window,
     renderer: Renderer,
-    terminal: Terminal,
-    pty: Pty,
+    tabs: TabManager,
     signals: SignalHandler,
     running: bool,
     wm_delete_window: xproto::Atom,
@@ -27,6 +26,13 @@ pub struct App {
     click_count: u32,
     /// Use VSync-based rendering (dirty flag only)
     vsync: bool,
+    /// Current window dimensions
+    width: u32,
+    height: u32,
+    /// Shell command for new panes
+    shell: String,
+    /// Working directory for new panes
+    cwd: Option<std::path::PathBuf>,
 }
 
 impl App {
@@ -49,22 +55,23 @@ impl App {
         let width = cols * cell_w;
         let height = rows * cell_h;
 
+        // Get background color from config for window
+        let bg_color = config.color_palette().background.to_u32();
+
         // Create window (don't auto-map so we can wait for WM to configure it)
         let window = Window::create(
             conn.clone(),
             WindowConfig::new()
-                .title("garterm")
-                .class("garterm")
+                .title(&config.window.title)
+                .class(&config.window.class)
                 .size(width, height)
-                .background(0x1a1b26) // Dark background (matching terminal)
+                .background(bg_color)
                 .map_on_create(false),
         )?;
 
         info!("Created window {}x{}", width, height);
 
         // Map window and wait for WM to assign final size
-        // This avoids the "quarter shading" issue where wgpu surface is created
-        // at requested size but WM immediately resizes to tiled size
         window.map()?;
         conn.flush()?;
 
@@ -75,7 +82,6 @@ impl App {
             if let Event::ConfigureNotify(e) = event {
                 break (e.width as u32, e.height as u32);
             }
-            // Continue waiting for ConfigureNotify, ignore other events
         };
 
         info!("Window configured: {}x{}", actual_width, actual_height);
@@ -99,19 +105,15 @@ impl App {
 
         info!("Terminal size: {}x{} (cell: {}x{})", cols, rows, cell_w, cell_h);
 
-        // Create terminal
-        let terminal = Terminal::new(cols, rows);
-
-        // Create PTY
-        let pty_size = PtySize {
-            rows: rows as u16,
-            cols: cols as u16,
-            pixel_width: actual_width as u16,
-            pixel_height: actual_height as u16,
-        };
-        let pty = Pty::spawn(
+        // Create tab manager with initial tab/pane
+        let tabs = TabManager::new(
             &config.general.shell,
-            pty_size,
+            cols,
+            rows,
+            actual_width,
+            actual_height,
+            cell_w,
+            cell_h,
             config.general.working_directory.as_deref(),
         )?;
 
@@ -124,8 +126,7 @@ impl App {
         Ok(Self {
             window,
             renderer,
-            terminal,
-            pty,
+            tabs,
             signals,
             running: true,
             wm_delete_window,
@@ -134,6 +135,10 @@ impl App {
             last_click: std::time::Instant::now(),
             click_count: 0,
             vsync: config.general.vsync,
+            width: actual_width,
+            height: actual_height,
+            shell: config.general.shell.clone(),
+            cwd: config.general.working_directory.clone(),
         })
     }
 
@@ -141,30 +146,24 @@ impl App {
     pub fn run(&mut self) -> Result<()> {
         let mut buf = [0u8; 4096];
 
-        // Get raw fds for polling
-        let pty_fd = self.pty.master_fd().as_raw_fd();
         let signal_fd = self.signals.as_raw_fd();
         let x11_fd = self.window.connection().inner().stream().as_raw_fd();
 
         while self.running {
-            // Poll all file descriptors
-            let pty_borrow = unsafe { BorrowedFd::borrow_raw(pty_fd) };
+            // Poll signal and X11 file descriptors
             let signal_borrow = unsafe { BorrowedFd::borrow_raw(signal_fd) };
             let x11_borrow = unsafe { BorrowedFd::borrow_raw(x11_fd) };
 
             let mut fds = [
-                PollFd::new(pty_borrow, PollFlags::POLLIN),
                 PollFd::new(signal_borrow, PollFlags::POLLIN),
                 PollFd::new(x11_borrow, PollFlags::POLLIN),
             ];
 
-            // Use a short timeout for rendering
-            poll(&mut fds, PollTimeout::from(16u16))?; // ~60fps
+            // Use a short timeout for rendering (~60fps)
+            poll(&mut fds, PollTimeout::from(16u16))?;
 
-            let pty_ready = fds[0].revents().is_some_and(|r| r.contains(PollFlags::POLLIN));
-            let signal_ready = fds[1].revents().is_some_and(|r| r.contains(PollFlags::POLLIN));
-            let x11_ready = fds[2].revents().is_some_and(|r| r.contains(PollFlags::POLLIN));
-            let pty_hup = fds[0].revents().is_some_and(|r| r.contains(PollFlags::POLLHUP));
+            let signal_ready = fds[0].revents().is_some_and(|r| r.contains(PollFlags::POLLIN));
+            let x11_ready = fds[1].revents().is_some_and(|r| r.contains(PollFlags::POLLIN));
 
             let _ = fds;
 
@@ -178,51 +177,49 @@ impl App {
                 self.handle_x11_events()?;
             }
 
-            // Read from PTY
-            if pty_ready {
-                match self.pty.read(&mut buf) {
-                    Ok(0) => {
-                        self.running = false;
+            // Read from all PTYs (non-blocking)
+            // For now, just read from the focused pane
+            if let Some(pane) = self.tabs.focused_pane_mut() {
+                loop {
+                    match pane.read_pty(&mut buf) {
+                        Ok(0) => break, // EOF
+                        Ok(_n) => {
+                            // Data was read and processed by terminal
+                            continue; // Try to read more
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(_) => break,
                     }
-                    Ok(n) => {
-                        tracing::debug!("PTY read {} bytes", n);
-                        self.terminal.input(&buf[..n]);
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                    Err(e) => return Err(e.into()),
+                }
+
+                // Flush terminal responses back to PTY
+                let responses: Vec<_> = pane.terminal.take_responses().collect();
+                for response in responses {
+                    let _ = pane.write_pty(&response);
+                }
+
+                // Handle bell
+                if pane.terminal.take_bell() {
+                    tracing::debug!("Bell!");
                 }
             }
 
-            // Flush terminal responses (DA, DSR, etc.) back to PTY
-            for response in self.terminal.take_responses() {
-                self.pty.write_all(&response)?;
-            }
-
-            // Handle bell
-            if self.terminal.take_bell() {
-                // TODO: visual bell or audio bell based on config
-                // For now, just log it
-                tracing::debug!("Bell!");
-            }
-
-            // Check for hangup
-            if pty_hup && !self.pty.is_alive() {
+            // Check for exited panes
+            self.tabs.handle_exits();
+            if !self.tabs.has_tabs() {
                 self.running = false;
             }
 
-            // Rendering strategy depends on vsync setting:
-            //
-            // vsync=false (default): Render every frame at ~60fps.
-            //   Required on Asahi Linux where VBlank interrupts don't work and
-            //   wgpu can't report X11 damage regions. Compositor needs continuous
-            //   frame submission to display content.
-            //
-            // vsync=true: Only render when terminal content changes.
-            //   More efficient but requires proper VSync/damage support.
-            //   May cause display issues on Asahi Linux.
-            let dirty = self.terminal.take_dirty();
+            // Render
+            let dirty = self.tabs.focused_pane()
+                .map(|p| p.terminal.is_dirty())
+                .unwrap_or(false);
+
             if !self.vsync || dirty {
-                self.renderer.render(&self.terminal)?;
+                if let Some(pane) = self.tabs.focused_pane_mut() {
+                    pane.take_dirty();
+                    self.renderer.render(&pane.terminal)?;
+                }
                 self.window.connection().flush()?;
             }
         }
@@ -236,7 +233,7 @@ impl App {
             match sig {
                 ReceivedSignal::ChildExited { pid, status } => {
                     info!("child {} exited with status {}", pid, status);
-                    self.running = false;
+                    // Don't exit immediately - handle_exits will clean up
                 }
                 ReceivedSignal::WindowResized => {
                     // X11 window resize is handled via ConfigureNotify
@@ -261,10 +258,13 @@ impl App {
         // Reload colors
         self.renderer.set_colors(config.color_palette());
 
-        // TODO: Reload keybinds
+        // Update shell for new panes
+        self.shell = config.general.shell.clone();
 
         // Force redraw
-        self.terminal.mark_dirty();
+        if let Some(pane) = self.tabs.focused_pane_mut() {
+            pane.mark_dirty();
+        }
 
         Ok(())
     }
@@ -284,7 +284,9 @@ impl App {
         for event in events {
             match event {
                 Event::Expose(_) => {
-                    self.terminal.mark_dirty();
+                    if let Some(pane) = self.tabs.focused_pane_mut() {
+                        pane.mark_dirty();
+                    }
                 }
 
                 Event::ConfigureNotify(e) => {
@@ -292,27 +294,23 @@ impl App {
                     let height = e.height as u32;
 
                     // Only process if size actually changed
-                    if self.renderer.size() != (width, height) {
+                    if (width, height) != (self.width, self.height) {
+                        self.width = width;
+                        self.height = height;
                         self.renderer.resize(width, height);
 
+                        // Relayout all panes
                         let (cell_w, cell_h) = self.renderer.cell_size();
-                        let cols = (width as f32 / cell_w) as usize;
-                        let rows = (height as f32 / cell_h) as usize;
+                        self.tabs.set_cell_size(cell_w, cell_h);
+                        self.tabs.relayout(width, height)?;
 
-                        if cols != self.terminal.cols() || rows != self.terminal.rows() {
-                            self.terminal.resize(cols, rows);
-                            self.pty.resize(PtySize {
-                                rows: rows as u16,
-                                cols: cols as u16,
-                                pixel_width: width as u16,
-                                pixel_height: height as u16,
-                            })?;
-                            info!("Resized to {}x{}", cols, rows);
+                        info!("Window resized to {}x{}", width, height);
+
+                        // Force immediate re-render
+                        if let Some(pane) = self.tabs.focused_pane_mut() {
+                            pane.mark_dirty();
+                            self.renderer.render(&pane.terminal)?;
                         }
-
-                        // Force immediate re-render after resize to clear stale content
-                        self.terminal.mark_dirty();
-                        self.renderer.render(&self.terminal)?;
                     }
                 }
 
@@ -340,8 +338,10 @@ impl App {
                 Event::SelectionNotify(e) => {
                     let conn = self.window.connection();
                     if let Some(text) = self.clipboard.handle_selection_notify(conn, &e)? {
-                        // Paste the text
-                        self.pty.write_all(text.as_bytes())?;
+                        // Paste the text to focused pane
+                        if let Some(pane) = self.tabs.focused_pane_mut() {
+                            pane.write_pty(text.as_bytes())?;
+                        }
                     }
                 }
 
@@ -358,19 +358,13 @@ impl App {
 
                 Event::FocusIn(_) => {
                     tracing::debug!("FocusIn event");
-                    self.terminal.mark_dirty();
+                    if let Some(pane) = self.tabs.focused_pane_mut() {
+                        pane.mark_dirty();
+                    }
                 }
 
                 Event::FocusOut(_) => {
                     tracing::debug!("FocusOut event");
-                }
-
-                Event::EnterNotify(e) => {
-                    tracing::debug!("EnterNotify at ({}, {})", e.event_x, e.event_y);
-                }
-
-                Event::LeaveNotify(_) => {
-                    tracing::debug!("LeaveNotify");
                 }
 
                 _ => {
@@ -389,31 +383,111 @@ impl App {
         let modifiers = modifiers_from_x11(event.state);
         let key = key_from_keycode(event.detail, &modifiers);
 
-        // Handle Ctrl+Shift+C (copy) and Ctrl+Shift+V (paste)
+        // Get terminal from focused pane for mode checks
+        let modes = self.tabs.focused_pane()
+            .map(|p| *p.terminal.modes())
+            .unwrap_or_default();
+
+        // Handle Ctrl+Shift+<key> terminal keybinds
         if modifiers.ctrl && modifiers.shift {
             match key {
+                // Copy
                 Key::Char('c') | Key::Char('C') => {
-                    // Copy selection to clipboard
                     if !self.selection.is_empty() {
-                        let text = self.selection.get_text(self.terminal.grid(), self.terminal.cols());
-                        if !text.is_empty() {
-                            self.clipboard.copy_clipboard(self.window.connection(), text)?;
+                        if let Some(pane) = self.tabs.focused_pane() {
+                            let text = self.selection.get_text(pane.terminal.grid(), pane.terminal.cols());
+                            if !text.is_empty() {
+                                self.clipboard.copy_clipboard(self.window.connection(), text)?;
+                            }
                         }
                     }
                     return Ok(());
                 }
+                // Paste
                 Key::Char('v') | Key::Char('V') => {
-                    // Paste from clipboard
                     self.clipboard.paste_clipboard(self.window.connection())?;
                     return Ok(());
                 }
+                // New tab
+                Key::Char('t') | Key::Char('T') => {
+                    self.tabs.new_tab(self.width, self.height, self.cwd.as_deref())?;
+                    if let Some(pane) = self.tabs.focused_pane_mut() {
+                        pane.mark_dirty();
+                    }
+                    return Ok(());
+                }
+                // Close pane (or tab if last pane)
+                Key::Char('w') | Key::Char('W') => {
+                    self.tabs.close_pane();
+                    if let Some(pane) = self.tabs.focused_pane_mut() {
+                        pane.mark_dirty();
+                    }
+                    return Ok(());
+                }
+                // Horizontal split
+                Key::Char('h') | Key::Char('H') => {
+                    self.tabs.split_horizontal(self.cwd.as_deref())?;
+                    if let Some(pane) = self.tabs.focused_pane_mut() {
+                        pane.mark_dirty();
+                    }
+                    return Ok(());
+                }
+                // Vertical split
+                Key::Char('e') | Key::Char('E') => {
+                    self.tabs.split_vertical(self.cwd.as_deref())?;
+                    if let Some(pane) = self.tabs.focused_pane_mut() {
+                        pane.mark_dirty();
+                    }
+                    return Ok(());
+                }
+                // Focus navigation
+                Key::Up => {
+                    self.tabs.focus_direction(Direction::Up, self.width, self.height);
+                    if let Some(pane) = self.tabs.focused_pane_mut() {
+                        pane.mark_dirty();
+                    }
+                    return Ok(());
+                }
+                Key::Down => {
+                    self.tabs.focus_direction(Direction::Down, self.width, self.height);
+                    if let Some(pane) = self.tabs.focused_pane_mut() {
+                        pane.mark_dirty();
+                    }
+                    return Ok(());
+                }
+                Key::Left => {
+                    self.tabs.focus_direction(Direction::Left, self.width, self.height);
+                    if let Some(pane) = self.tabs.focused_pane_mut() {
+                        pane.mark_dirty();
+                    }
+                    return Ok(());
+                }
+                Key::Right => {
+                    self.tabs.focus_direction(Direction::Right, self.width, self.height);
+                    if let Some(pane) = self.tabs.focused_pane_mut() {
+                        pane.mark_dirty();
+                    }
+                    return Ok(());
+                }
+                // Tab switching
+                Key::Char('1') => { self.tabs.switch_to_tab(1); return Ok(()); }
+                Key::Char('2') => { self.tabs.switch_to_tab(2); return Ok(()); }
+                Key::Char('3') => { self.tabs.switch_to_tab(3); return Ok(()); }
+                Key::Char('4') => { self.tabs.switch_to_tab(4); return Ok(()); }
+                Key::Char('5') => { self.tabs.switch_to_tab(5); return Ok(()); }
+                Key::Char('6') => { self.tabs.switch_to_tab(6); return Ok(()); }
+                Key::Char('7') => { self.tabs.switch_to_tab(7); return Ok(()); }
+                Key::Char('8') => { self.tabs.switch_to_tab(8); return Ok(()); }
+                Key::Char('9') => { self.tabs.switch_to_tab(9); return Ok(()); }
                 _ => {}
             }
         }
 
-        // Use KeyboardHandler for normal key translation
-        if let Some(bytes) = KeyboardHandler::translate(key, &modifiers, self.terminal.modes()) {
-            self.pty.write_all(&bytes)?;
+        // Normal key translation - send to focused pane
+        if let Some(bytes) = KeyboardHandler::translate(key, &modifiers, &modes) {
+            if let Some(pane) = self.tabs.focused_pane_mut() {
+                pane.write_pty(&bytes)?;
+            }
         }
 
         Ok(())
@@ -433,9 +507,14 @@ impl App {
             _ => return Ok(()),
         };
 
-        // Check mouse mode for reporting to application
-        let modes = self.terminal.modes();
+        // Get terminal modes from focused pane
+        let modes = self.tabs.focused_pane()
+            .map(|p| *p.terminal.modes())
+            .unwrap_or_default();
+
         let state: u16 = event.state.into();
+
+        // Check mouse mode for reporting to application
         if modes.mouse_mode != crate::terminal::MouseMode::None {
             let shift = state & 0x01 != 0;
             let alt = state & 0x08 != 0;
@@ -451,7 +530,9 @@ impl App {
                 modes.mouse_mode,
                 modes.mouse_encoding,
             ) {
-                self.pty.write_all(&bytes)?;
+                if let Some(pane) = self.tabs.focused_pane_mut() {
+                    pane.write_pty(&bytes)?;
+                }
                 return Ok(());
             }
         }
@@ -470,44 +551,43 @@ impl App {
                 }
                 self.last_click = now;
 
-                match self.click_count {
-                    1 => {
-                        // Single click - start selection
-                        let mode = if state & 0x04 != 0 {
-                            // Ctrl held - block selection
-                            SelectionMode::Block
-                        } else {
-                            SelectionMode::Normal
-                        };
-                        self.selection.start(row, col, mode);
-                    }
-                    2 => {
-                        // Double click - select word
-                        self.selection.select_word(row, col, self.terminal.grid(), self.terminal.cols());
-                    }
-                    _ => {
-                        // Triple+ click - select line
-                        self.selection.select_line(row, self.terminal.cols());
+                if let Some(pane) = self.tabs.focused_pane() {
+                    match self.click_count {
+                        1 => {
+                            let mode = if state & 0x04 != 0 {
+                                SelectionMode::Block
+                            } else {
+                                SelectionMode::Normal
+                            };
+                            self.selection.start(row, col, mode);
+                        }
+                        2 => {
+                            self.selection.select_word(row, col, pane.terminal.grid(), pane.terminal.cols());
+                        }
+                        _ => {
+                            self.selection.select_line(row, pane.terminal.cols());
+                        }
                     }
                 }
-                self.terminal.mark_dirty();
+                if let Some(pane) = self.tabs.focused_pane_mut() {
+                    pane.mark_dirty();
+                }
             }
             MouseButton::Middle => {
-                // Middle click - paste from PRIMARY
                 self.clipboard.paste_primary(self.window.connection())?;
             }
             MouseButton::Right => {
-                // Right click could paste or show context menu
-                // For now, paste from clipboard
                 self.clipboard.paste_clipboard(self.window.connection())?;
             }
             MouseButton::WheelUp => {
-                // Scroll up into history (3 lines per tick)
-                self.terminal.scroll_up(3);
+                if let Some(pane) = self.tabs.focused_pane_mut() {
+                    pane.terminal.scroll_up(3);
+                }
             }
             MouseButton::WheelDown => {
-                // Scroll down towards current (3 lines per tick)
-                self.terminal.scroll_down(3);
+                if let Some(pane) = self.tabs.focused_pane_mut() {
+                    pane.terminal.scroll_down(3);
+                }
             }
             MouseButton::None => {}
         }
@@ -527,9 +607,14 @@ impl App {
             _ => return Ok(()),
         };
 
-        // Check mouse mode for reporting
-        let modes = self.terminal.modes();
+        // Get terminal modes from focused pane
+        let modes = self.tabs.focused_pane()
+            .map(|p| *p.terminal.modes())
+            .unwrap_or_default();
+
         let state: u16 = event.state.into();
+
+        // Check mouse mode for reporting
         if modes.mouse_mode != crate::terminal::MouseMode::None {
             let shift = state & 0x01 != 0;
             let alt = state & 0x08 != 0;
@@ -545,7 +630,9 @@ impl App {
                 modes.mouse_mode,
                 modes.mouse_encoding,
             ) {
-                self.pty.write_all(&bytes)?;
+                if let Some(pane) = self.tabs.focused_pane_mut() {
+                    pane.write_pty(&bytes)?;
+                }
             }
         }
 
@@ -553,11 +640,12 @@ impl App {
         if button == MouseButton::Left && self.selection.is_active() {
             self.selection.finish();
 
-            // Copy selection to PRIMARY (X11 convention)
             if !self.selection.is_empty() {
-                let text = self.selection.get_text(self.terminal.grid(), self.terminal.cols());
-                if !text.is_empty() {
-                    self.clipboard.copy_primary(self.window.connection(), text)?;
+                if let Some(pane) = self.tabs.focused_pane() {
+                    let text = self.selection.get_text(pane.terminal.grid(), pane.terminal.cols());
+                    if !text.is_empty() {
+                        self.clipboard.copy_primary(self.window.connection(), text)?;
+                    }
                 }
             }
         }
@@ -570,15 +658,19 @@ impl App {
         let col = (event.event_x as f32 / cell_w) as usize;
         let row = (event.event_y as f32 / cell_h) as usize;
 
-        // Check mouse mode for motion reporting
-        let modes = self.terminal.modes();
+        // Get terminal modes from focused pane
+        let modes = self.tabs.focused_pane()
+            .map(|p| *p.terminal.modes())
+            .unwrap_or_default();
+
         let state: u16 = event.state.into();
+
+        // Check mouse mode for motion reporting
         if modes.mouse_mode != crate::terminal::MouseMode::None {
             let shift = state & 0x01 != 0;
             let alt = state & 0x08 != 0;
             let ctrl = state & 0x04 != 0;
 
-            // Determine if button is held (drag) or just motion
             let mouse_event = if state & 0x100 != 0 {
                 MouseEvent::Drag(MouseButton::Left)
             } else if state & 0x200 != 0 {
@@ -599,14 +691,18 @@ impl App {
                 modes.mouse_mode,
                 modes.mouse_encoding,
             ) {
-                self.pty.write_all(&bytes)?;
+                if let Some(pane) = self.tabs.focused_pane_mut() {
+                    pane.write_pty(&bytes)?;
+                }
             }
         }
 
         // Update selection during drag
         if self.selection.is_active() && state & 0x100 != 0 {
             self.selection.update(row, col);
-            self.terminal.mark_dirty();
+            if let Some(pane) = self.tabs.focused_pane_mut() {
+                pane.mark_dirty();
+            }
         }
 
         Ok(())

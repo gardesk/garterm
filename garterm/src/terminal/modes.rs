@@ -1,5 +1,5 @@
 /// Terminal modes (DEC private modes and ANSI modes)
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct TerminalModes {
     // DEC Private Modes
     /// DECCKM - Application cursor keys
