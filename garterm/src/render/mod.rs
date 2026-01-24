@@ -11,6 +11,45 @@ use crate::ui::{TabBarRenderData, TabRect};
 use atlas::{GlyphAtlas, GlyphKey};
 use bytemuck::{Pod, Zeroable};
 
+/// Selection bounds for rendering
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SelectionBounds {
+    pub start_row: usize,
+    pub start_col: usize,
+    pub end_row: usize,
+    pub end_col: usize,
+    pub is_block: bool,
+}
+
+impl SelectionBounds {
+    /// Check if a cell is within this selection
+    pub fn contains(&self, row: usize, col: usize, _cols: usize) -> bool {
+        if self.is_block {
+            // Block selection: rectangular
+            let (min_col, max_col) = if self.start_col <= self.end_col {
+                (self.start_col, self.end_col)
+            } else {
+                (self.end_col, self.start_col)
+            };
+            row >= self.start_row && row <= self.end_row && col >= min_col && col <= max_col
+        } else {
+            // Normal selection: continuous from start to end
+            if row < self.start_row || row > self.end_row {
+                return false;
+            }
+            if row == self.start_row && row == self.end_row {
+                col >= self.start_col && col <= self.end_col
+            } else if row == self.start_row {
+                col >= self.start_col
+            } else if row == self.end_row {
+                col <= self.end_col
+            } else {
+                true // Middle lines fully selected
+            }
+        }
+    }
+}
+
 /// Information needed to render a pane at a specific position
 pub struct PaneRenderInfo<'a> {
     pub terminal: &'a Terminal,
@@ -19,6 +58,8 @@ pub struct PaneRenderInfo<'a> {
     pub width: u32,
     pub height: u32,
     pub focused: bool,
+    /// Optional selection bounds (only for focused pane)
+    pub selection: Option<SelectionBounds>,
 }
 
 /// Vertex for rendering quads (glyphs and backgrounds)
@@ -364,7 +405,13 @@ impl Renderer {
 
         // Build pane vertices
         for (i, pane) in panes.iter().enumerate() {
-            self.build_vertices_at(pane.terminal, pane.x, pane.y, false);
+            self.build_vertices_with_selection(
+                pane.terminal,
+                pane.x,
+                pane.y,
+                false,
+                pane.selection.as_ref(),
+            );
 
             if panes.len() > 1 {
                 self.add_pane_border(pane.x, pane.y, pane.width, pane.height, pane.focused);
@@ -536,7 +583,13 @@ impl Renderer {
 
         for (i, pane) in panes.iter().enumerate() {
             // Build vertices for this pane at its position
-            self.build_vertices_at(pane.terminal, pane.x, pane.y, false);
+            self.build_vertices_with_selection(
+                pane.terminal,
+                pane.x,
+                pane.y,
+                false,
+                pane.selection.as_ref(),
+            );
 
             // Draw a subtle border around non-focused panes (or highlight focused)
             if panes.len() > 1 {
@@ -656,11 +709,18 @@ impl Renderer {
     }
 
     fn build_vertices(&mut self, terminal: &Terminal) {
-        self.build_vertices_at(terminal, 0, 0, true);
+        self.build_vertices_with_selection(terminal, 0, 0, true, None);
     }
 
-    /// Build vertices for a terminal at a specific offset, optionally clearing first
-    fn build_vertices_at(&mut self, terminal: &Terminal, offset_x: u32, offset_y: u32, clear: bool) {
+    /// Build vertices for a terminal at a specific offset, with optional selection highlighting
+    fn build_vertices_with_selection(
+        &mut self,
+        terminal: &Terminal,
+        offset_x: u32,
+        offset_y: u32,
+        clear: bool,
+        selection: Option<&SelectionBounds>,
+    ) {
         if clear {
             self.vertices.clear();
             self.indices.clear();
@@ -674,66 +734,84 @@ impl Renderer {
         let to_ndc_x = |x: f32| (x / surface_w as f32) * 2.0 - 1.0;
         let to_ndc_y = |y: f32| 1.0 - (y / surface_h as f32) * 2.0;
 
-        let grid = terminal.grid();
         let cols = terminal.cols();
         let rows = terminal.rows();
 
-        // Render each cell
-        for row in 0..rows {
-            if let Some(line) = grid.line(row) {
-                for col in 0..cols {
-                    let cell = &line[col];
+        // Selection highlight color (semi-transparent blue)
+        let selection_bg = [0.3, 0.5, 0.8, 0.5];
 
-                    let x = offset_x as f32 + col as f32 * cell_w;
-                    let y = offset_y as f32 + row as f32 * cell_h;
+        // Use visible_lines to account for scrollback
+        for (row, line) in terminal.grid().visible_lines().enumerate().take(rows) {
+            for col in 0..cols {
+                let cell = &line[col];
 
-                    // Background (if not default)
-                    if cell.bg != CellColor::Default {
-                        let bg_color = self.color_to_rgba(&cell.bg, false);
-                        self.add_quad(
-                            to_ndc_x(x), to_ndc_y(y),
-                            to_ndc_x(x + cell_w), to_ndc_y(y + cell_h),
-                            0.0, 0.0, 0.0, 0.0, // No UV for solid
-                            bg_color,
-                            0.0, // Not a glyph
-                        );
-                    }
+                let x = offset_x as f32 + col as f32 * cell_w;
+                let y = offset_y as f32 + row as f32 * cell_h;
 
-                    // Character (if not space)
-                    if cell.c != ' ' {
-                        let style = if cell.attrs.bold && cell.attrs.italic {
-                            FontStyle::BoldItalic
-                        } else if cell.attrs.bold {
-                            FontStyle::Bold
-                        } else if cell.attrs.italic {
-                            FontStyle::Italic
-                        } else {
-                            FontStyle::Regular
-                        };
+                // Check if cell is selected
+                let is_selected = selection
+                    .map(|s| s.contains(row, col, cols))
+                    .unwrap_or(false);
 
-                        let key = GlyphKey { c: cell.c, style };
-                        if let Some(entry) = self.atlas.get_or_insert(key, &self.fonts) {
-                            if entry.width > 0 && entry.height > 0 {
-                                let fg_color = self.color_to_rgba(&cell.fg, true);
+                // Background: selection takes priority, then cell background
+                if is_selected {
+                    self.add_quad(
+                        to_ndc_x(x), to_ndc_y(y),
+                        to_ndc_x(x + cell_w), to_ndc_y(y + cell_h),
+                        0.0, 0.0, 0.0, 0.0,
+                        selection_bg,
+                        0.0,
+                    );
+                } else if cell.bg != CellColor::Default {
+                    let bg_color = self.color_to_rgba(&cell.bg, false);
+                    self.add_quad(
+                        to_ndc_x(x), to_ndc_y(y),
+                        to_ndc_x(x + cell_w), to_ndc_y(y + cell_h),
+                        0.0, 0.0, 0.0, 0.0,
+                        bg_color,
+                        0.0,
+                    );
+                }
 
-                                // Calculate glyph position
-                                let glyph_x = x + entry.bearing_x as f32;
-                                let glyph_y = y + self.fonts.baseline() - entry.bearing_y as f32 - entry.height as f32;
+                // Character (if not space or null)
+                if cell.c != ' ' && cell.c != '\0' {
+                    let style = if cell.attrs.bold && cell.attrs.italic {
+                        FontStyle::BoldItalic
+                    } else if cell.attrs.bold {
+                        FontStyle::Bold
+                    } else if cell.attrs.italic {
+                        FontStyle::Italic
+                    } else {
+                        FontStyle::Regular
+                    };
 
-                                // UV coordinates in atlas
-                                let u0 = entry.x as f32 / atlas_size.0 as f32;
-                                let v0 = entry.y as f32 / atlas_size.1 as f32;
-                                let u1 = (entry.x + entry.width) as f32 / atlas_size.0 as f32;
-                                let v1 = (entry.y + entry.height) as f32 / atlas_size.1 as f32;
+                    let key = GlyphKey { c: cell.c, style };
+                    if let Some(entry) = self.atlas.get_or_insert(key, &self.fonts) {
+                        if entry.width > 0 && entry.height > 0 {
+                            // For selected text, use contrasting foreground
+                            let fg_color = if is_selected {
+                                [1.0, 1.0, 1.0, 1.0] // White text on selection
+                            } else {
+                                self.color_to_rgba(&cell.fg, true)
+                            };
 
-                                self.add_quad(
-                                    to_ndc_x(glyph_x), to_ndc_y(glyph_y),
-                                    to_ndc_x(glyph_x + entry.width as f32), to_ndc_y(glyph_y + entry.height as f32),
-                                    u0, v0, u1, v1,
-                                    fg_color,
-                                    1.0, // Is a glyph
-                                );
-                            }
+                            // Calculate glyph position
+                            let glyph_x = x + entry.bearing_x as f32;
+                            let glyph_y = y + self.fonts.baseline() - entry.bearing_y as f32 - entry.height as f32;
+
+                            // UV coordinates in atlas
+                            let u0 = entry.x as f32 / atlas_size.0 as f32;
+                            let v0 = entry.y as f32 / atlas_size.1 as f32;
+                            let u1 = (entry.x + entry.width) as f32 / atlas_size.0 as f32;
+                            let v1 = (entry.y + entry.height) as f32 / atlas_size.1 as f32;
+
+                            self.add_quad(
+                                to_ndc_x(glyph_x), to_ndc_y(glyph_y),
+                                to_ndc_x(glyph_x + entry.width as f32), to_ndc_y(glyph_y + entry.height as f32),
+                                u0, v0, u1, v1,
+                                fg_color,
+                                1.0, // Is a glyph
+                            );
                         }
                     }
                 }

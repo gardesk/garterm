@@ -16,6 +16,20 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tracing::{debug, error, info, warn};
 
+/// Expand tilde (~) in path to home directory
+pub fn expand_tilde(path: &str) -> PathBuf {
+    if path.starts_with("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(&path[2..]);
+        }
+    } else if path == "~" {
+        if let Some(home) = dirs::home_dir() {
+            return home;
+        }
+    }
+    PathBuf::from(path)
+}
+
 /// Terminal commands queued by Lua callbacks
 #[derive(Debug, Clone)]
 pub enum TerminalCommand {
@@ -449,7 +463,7 @@ impl LuaRuntime {
     /// Parse a session tab definition
     fn parse_session_tab(&self, table: &Table) -> LuaResult<SessionTab> {
         let title = table.get::<Option<String>>("title").ok().flatten();
-        let cwd = table.get::<Option<String>>("cwd").ok().flatten().map(PathBuf::from);
+        let cwd = table.get::<Option<String>>("cwd").ok().flatten().map(|s| expand_tilde(&s));
         let cmd = table.get::<Option<String>>("cmd").ok().flatten();
 
         let mut splits = Vec::new();
@@ -467,7 +481,7 @@ impl LuaRuntime {
     /// Parse a session split definition
     fn parse_session_split(&self, table: &Table) -> LuaResult<SessionSplit> {
         let direction = table.get::<String>("direction").unwrap_or_else(|_| "vertical".into());
-        let cwd = table.get::<Option<String>>("cwd").ok().flatten().map(PathBuf::from);
+        let cwd = table.get::<Option<String>>("cwd").ok().flatten().map(|s| expand_tilde(&s));
         let cmd = table.get::<Option<String>>("cmd").ok().flatten();
 
         Ok(SessionSplit { direction, cwd, cmd })

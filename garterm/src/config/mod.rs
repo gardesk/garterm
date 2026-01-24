@@ -34,7 +34,7 @@ pub mod runtime;
 
 pub use colors::{Color, ColorPalette};
 pub use keybinds::{Action, Keybind, KeybindSet, Modifiers};
-pub use runtime::{LuaRuntime, LuaState, LuaKeybind, TerminalCommand, Session, SessionTab, SessionSplit};
+pub use runtime::{LuaRuntime, LuaState, LuaKeybind, TerminalCommand, Session, SessionTab, SessionSplit, expand_tilde};
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

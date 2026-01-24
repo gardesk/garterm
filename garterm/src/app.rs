@@ -1,9 +1,9 @@
-use crate::config::{Action, Config, KeybindSet, LuaRuntime, Modifiers as ConfigModifiers, TerminalCommand};
+use crate::config::{Action, Config, KeybindSet, LuaRuntime, Modifiers as ConfigModifiers, TerminalCommand, expand_tilde};
 use crate::input::{Clipboard, KeyboardHandler, MouseButton, MouseEvent, MouseHandler, Selection, SelectionMode};
 use crate::ipc::IpcServer;
 use crate::pty::{PtySize, ReceivedSignal, SignalHandler};
-use crate::render::{PaneRenderInfo, Renderer};
-use crate::ui::{Direction, TabManager};
+use crate::render::{PaneRenderInfo, Renderer, SelectionBounds};
+use crate::ui::{Direction, PaneId, TabManager};
 use anyhow::Result;
 use garterm_ipc::{Command, Response};
 use gartk_x11::{Connection, Window, WindowConfig};
@@ -289,6 +289,7 @@ impl App {
                 // Collect pane render info and render
                 // Add content_offset to y positions (to account for tab bar)
                 let content_offset = self.tabs.content_offset();
+                let selection_bounds = self.get_selection_bounds();
                 let pane_infos: Vec<PaneRenderInfo> = self.tabs.active_tab()
                     .map(|tab| {
                         tab.panes.values().map(|pane| PaneRenderInfo {
@@ -298,6 +299,8 @@ impl App {
                             width: pane.width,
                             height: pane.height,
                             focused: pane.focused,
+                            // Only show selection on focused pane
+                            selection: if pane.focused { selection_bounds } else { None },
                         }).collect()
                     })
                     .unwrap_or_default();
@@ -501,22 +504,21 @@ impl App {
         for cmd in commands {
             match cmd {
                 TerminalCommand::NewTab { cwd, cmd, title } => {
-                    let cwd_path = cwd.map(std::path::PathBuf::from);
-                    self.tabs.new_tab_with_command(
+                    let cwd_path = cwd.map(|s| expand_tilde(&s));
+                    let tab_id = self.tabs.new_tab_with_command(
                         self.width,
                         self.height,
                         cwd_path.as_deref(),
                         cmd.as_deref(),
                     )?;
-                    // TODO: Set title if provided (currently set via OSC title sequence from shell)
-                    if let Some(_title) = title {
-                        // Will be set via OSC title sequence from shell
+                    if let Some(title) = title {
+                        self.tabs.set_tab_title(tab_id, title);
                     }
                     self.tabs.relayout(self.width, self.height)?;
                     self.tabs.mark_all_dirty();
                 }
                 TerminalCommand::Split { direction, cwd, cmd } => {
-                    let cwd_path = cwd.map(std::path::PathBuf::from);
+                    let cwd_path = cwd.map(|s| expand_tilde(&s));
                     match direction.to_lowercase().as_str() {
                         "horizontal" | "h" => {
                             self.tabs.split_horizontal_with_command(cwd_path.as_deref(), cmd.as_deref())?
@@ -528,9 +530,13 @@ impl App {
                     self.tabs.relayout(self.width, self.height)?;
                     self.tabs.mark_all_dirty();
                 }
-                TerminalCommand::SendText { pane_id: _, text } => {
-                    // TODO: Support pane_id targeting
-                    if let Some(pane) = self.tabs.focused_pane_mut() {
+                TerminalCommand::SendText { pane_id, text } => {
+                    let pane = if let Some(id) = pane_id {
+                        self.tabs.get_pane_mut(PaneId(id))
+                    } else {
+                        self.tabs.focused_pane_mut()
+                    };
+                    if let Some(pane) = pane {
                         pane.write_pty(text.as_bytes())?;
                     }
                 }
@@ -549,8 +555,10 @@ impl App {
                     self.tabs.switch_to_tab(index);
                     self.tabs.mark_all_dirty();
                 }
-                TerminalCommand::FocusPane { pane_id: _ } => {
-                    // TODO: Support direct pane focusing by ID
+                TerminalCommand::FocusPane { pane_id } => {
+                    if self.tabs.focus_pane(PaneId(pane_id)) {
+                        self.tabs.mark_all_dirty();
+                    }
                 }
                 TerminalCommand::FocusDirection { direction } => {
                     let dir = match direction.to_lowercase().as_str() {
@@ -594,12 +602,17 @@ impl App {
 
         for tab_def in &session.tabs {
             // Create the tab with startup command (waits for OSC 133 prompt)
-            self.tabs.new_tab_with_command(
+            let tab_id = self.tabs.new_tab_with_command(
                 self.width,
                 self.height,
                 tab_def.cwd.as_deref(),
                 tab_def.cmd.as_deref(),
             )?;
+
+            // Set custom title if provided
+            if let Some(ref title) = tab_def.title {
+                self.tabs.set_tab_title(tab_id, title.clone());
+            }
 
             // Create splits within the tab
             for split_def in &tab_def.splits {
@@ -627,6 +640,22 @@ impl App {
         self.tabs.switch_to_tab(1);
 
         Ok(())
+    }
+
+    /// Get selection bounds for rendering (if selection exists and spans multiple cells)
+    fn get_selection_bounds(&self) -> Option<SelectionBounds> {
+        let bounds = self.selection.bounds()?;
+        // Don't render single-cell selections (just a click, not a drag)
+        if bounds.0.row == bounds.1.row && bounds.0.col == bounds.1.col {
+            return None;
+        }
+        Some(SelectionBounds {
+            start_row: bounds.0.row,
+            start_col: bounds.0.col,
+            end_row: bounds.1.row,
+            end_col: bounds.1.col,
+            is_block: matches!(self.selection.mode(), SelectionMode::Block),
+        })
     }
 
     /// Convert gartk Modifiers to config Modifiers
@@ -914,6 +943,7 @@ impl App {
                         // Render tab bar + all panes
                         let tab_bar_data = self.tabs.render_tab_bar(width, height);
                         let content_offset = self.tabs.content_offset();
+                        let selection_bounds = self.get_selection_bounds();
                         let pane_infos: Vec<PaneRenderInfo> = self.tabs.active_tab()
                             .map(|tab| {
                                 tab.panes.values().map(|pane| PaneRenderInfo {
@@ -923,6 +953,7 @@ impl App {
                                     width: pane.width,
                                     height: pane.height,
                                     focused: pane.focused,
+                                    selection: if pane.focused { selection_bounds } else { None },
                                 }).collect()
                             })
                             .unwrap_or_default();
@@ -1120,6 +1151,8 @@ impl App {
                 if let Some(pane) = self.tabs.focused_pane() {
                     match self.click_count {
                         1 => {
+                            // Single click: clear any existing selection, prepare for potential drag
+                            self.selection.clear();
                             let mode = if state & 0x04 != 0 {
                                 SelectionMode::Block
                             } else {
