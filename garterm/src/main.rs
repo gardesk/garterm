@@ -11,6 +11,7 @@ mod input;
 mod pty;
 mod render;
 mod terminal;
+mod ui;
 
 pub use config::Config;
 

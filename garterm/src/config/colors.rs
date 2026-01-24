@@ -66,6 +66,18 @@ impl Color {
         };
         (to_linear(r), to_linear(g), to_linear(b))
     }
+
+    /// Convert to [f32; 4] RGBA for rendering (normalized sRGB, not linear)
+    pub fn to_rgba(&self) -> [f32; 4] {
+        let (r, g, b) = self.to_rgb();
+        [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0]
+    }
+
+    /// Convert to wgpu::Color with proper sRGB to linear conversion
+    pub fn to_wgpu_color(&self) -> wgpu::Color {
+        let (r, g, b) = self.to_linear();
+        wgpu::Color { r, g, b, a: 1.0 }
+    }
 }
 
 impl Default for Color {
@@ -365,6 +377,28 @@ impl ColorPalette {
             "nord",
             "solarized-dark",
             "one-dark",
+        ]
+    }
+
+    /// Convert base 16 colors to renderer palette format
+    pub fn to_render_palette(&self) -> [[f32; 4]; 16] {
+        [
+            self.black.to_rgba(),
+            self.red.to_rgba(),
+            self.green.to_rgba(),
+            self.yellow.to_rgba(),
+            self.blue.to_rgba(),
+            self.magenta.to_rgba(),
+            self.cyan.to_rgba(),
+            self.white.to_rgba(),
+            self.bright_black.to_rgba(),
+            self.bright_red.to_rgba(),
+            self.bright_green.to_rgba(),
+            self.bright_yellow.to_rgba(),
+            self.bright_blue.to_rgba(),
+            self.bright_magenta.to_rgba(),
+            self.bright_cyan.to_rgba(),
+            self.bright_white.to_rgba(),
         ]
     }
 }

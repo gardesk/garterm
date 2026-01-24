@@ -5,6 +5,7 @@ mod gpu;
 pub use font::{FontCache, FontStyle};
 pub use gpu::{GpuContext, GpuError};
 
+use crate::config::ColorPalette;
 use crate::terminal::{CellColor, Terminal};
 use atlas::{GlyphAtlas, GlyphKey};
 use bytemuck::{Pod, Zeroable};
@@ -48,7 +49,9 @@ pub struct Renderer {
     index_buffer: wgpu::Buffer,
     vertices: Vec<Vertex>,
     indices: Vec<u32>,
-    /// Default color palette (base 16)
+    /// Color palette from config
+    colors: ColorPalette,
+    /// Base 16 palette for rendering
     palette: [[f32; 4]; 16],
 }
 
@@ -59,6 +62,7 @@ impl Renderer {
         width: u32,
         height: u32,
         font_size: f32,
+        colors: ColorPalette,
     ) -> Result<Self, GpuError> {
         let gpu = GpuContext::new(window, width, height).await?;
         let fonts = FontCache::new(font_size).expect("Failed to load fonts");
@@ -185,6 +189,8 @@ impl Renderer {
             mapped_at_creation: false,
         });
 
+        let palette = colors.to_render_palette();
+
         Ok(Self {
             gpu,
             fonts,
@@ -196,7 +202,8 @@ impl Renderer {
             index_buffer,
             vertices: Vec::new(),
             indices: Vec::new(),
-            palette: default_palette(),
+            colors,
+            palette,
         })
     }
 
@@ -213,6 +220,12 @@ impl Renderer {
     /// Resize the renderer
     pub fn resize(&mut self, width: u32, height: u32) {
         self.gpu.resize(width, height);
+    }
+
+    /// Update color palette (for hot reload)
+    pub fn set_colors(&mut self, colors: ColorPalette) {
+        self.palette = colors.to_render_palette();
+        self.colors = colors;
     }
 
     /// Render the terminal
@@ -272,15 +285,7 @@ impl Renderer {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            // 0x1a1b26 converted from sRGB to linear space
-                            // sRGB values: (26/255, 27/255, 38/255) = (0.102, 0.106, 0.149)
-                            // Linear = sRGB / 12.92 for small values
-                            r: 0.0079,
-                            g: 0.0082,
-                            b: 0.0115,
-                            a: 1.0,
-                        }),
+                        load: wgpu::LoadOp::Clear(self.colors.background.to_wgpu_color()),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -391,7 +396,7 @@ impl Renderer {
         if terminal.modes().cursor_visible {
             let x = cursor.col as f32 * cell_w;
             let y = cursor.row as f32 * cell_h;
-            let cursor_color = [0.8, 0.8, 0.8, 1.0];
+            let cursor_color = self.colors.cursor.to_rgba();
 
             self.add_quad(
                 to_ndc_x(x), to_ndc_y(y),
@@ -429,9 +434,9 @@ impl Renderer {
         match color {
             CellColor::Default => {
                 if is_fg {
-                    [0.8, 0.8, 0.85, 1.0] // Default foreground
+                    self.colors.foreground.to_rgba()
                 } else {
-                    [0.1, 0.1, 0.12, 1.0] // Default background
+                    self.colors.background.to_rgba()
                 }
             }
             CellColor::Indexed(idx) => {
@@ -463,24 +468,3 @@ impl Renderer {
     }
 }
 
-/// Default color palette (roughly xterm-256color base 16)
-fn default_palette() -> [[f32; 4]; 16] {
-    [
-        [0.0, 0.0, 0.0, 1.0],       // 0: Black
-        [0.8, 0.0, 0.0, 1.0],       // 1: Red
-        [0.0, 0.8, 0.0, 1.0],       // 2: Green
-        [0.8, 0.8, 0.0, 1.0],       // 3: Yellow
-        [0.0, 0.0, 0.8, 1.0],       // 4: Blue
-        [0.8, 0.0, 0.8, 1.0],       // 5: Magenta
-        [0.0, 0.8, 0.8, 1.0],       // 6: Cyan
-        [0.75, 0.75, 0.75, 1.0],    // 7: White
-        [0.5, 0.5, 0.5, 1.0],       // 8: Bright Black
-        [1.0, 0.0, 0.0, 1.0],       // 9: Bright Red
-        [0.0, 1.0, 0.0, 1.0],       // 10: Bright Green
-        [1.0, 1.0, 0.0, 1.0],       // 11: Bright Yellow
-        [0.0, 0.0, 1.0, 1.0],       // 12: Bright Blue
-        [1.0, 0.0, 1.0, 1.0],       // 13: Bright Magenta
-        [0.0, 1.0, 1.0, 1.0],       // 14: Bright Cyan
-        [1.0, 1.0, 1.0, 1.0],       // 15: Bright White
-    ]
-}

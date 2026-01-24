@@ -80,12 +80,16 @@ impl App {
 
         info!("Window configured: {}x{}", actual_width, actual_height);
 
+        // Resolve color palette from config
+        let colors = config.color_palette();
+
         // Create renderer with actual window size
         let renderer = Renderer::new(
             window.id(),
             actual_width,
             actual_height,
             font_size,
+            colors,
         ).await?;
 
         // Calculate actual cell size from loaded fonts
@@ -254,7 +258,9 @@ impl App {
         // Update vsync setting
         self.vsync = config.general.vsync;
 
-        // TODO: Reload colors when renderer supports it
+        // Reload colors
+        self.renderer.set_colors(config.color_palette());
+
         // TODO: Reload keybinds
 
         // Force redraw
