@@ -297,7 +297,28 @@ fn parse_keybind_table(table: &mlua::Table, config: &mut super::keybinds::Keybin
                 mlua::Value::String(s) => s.to_str().ok().map(|s| s.to_string()),
                 mlua::Value::Table(t) => {
                     // Handle { action = "...", ... } format
-                    t.get::<String>("action").ok()
+                    if let Ok(action) = t.get::<String>("action") {
+                        // Check for load_session with session parameter
+                        if action == "load_session" {
+                            if let Ok(session) = t.get::<String>("session") {
+                                // Format as "load_session:session_name" for Action::from_str_loose
+                                Some(format!("load_session:{}", session))
+                            } else {
+                                tracing::warn!("load_session action missing 'session' parameter for {}", key_combo);
+                                None
+                            }
+                        } else {
+                            Some(action)
+                        }
+                    } else {
+                        None
+                    }
+                }
+                mlua::Value::Function(_) => {
+                    // Lua function callbacks require LuaRuntime (set up in app.rs)
+                    // Log for debugging but skip - these are handled by runtime.rs
+                    tracing::debug!("Lua function keybind '{}' requires LuaRuntime", key_combo);
+                    None
                 }
                 _ => None,
             };
