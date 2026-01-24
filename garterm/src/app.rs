@@ -1,8 +1,8 @@
 use crate::config::{Action, Config, KeybindSet, LuaRuntime, Modifiers as ConfigModifiers, TerminalCommand, expand_tilde};
-use crate::input::{Clipboard, KeyboardHandler, MouseButton, MouseEvent, MouseHandler, Selection, SelectionMode};
+use crate::input::{Clipboard, KeyboardHandler, MouseButton, MouseEvent, MouseHandler, SearchState, Selection, SelectionMode};
 use crate::ipc::IpcServer;
 use crate::pty::{PtySize, ReceivedSignal, SignalHandler};
-use crate::render::{PaneRenderInfo, Renderer, SelectionBounds};
+use crate::render::{PaneRenderInfo, Renderer, SearchOverlay, SelectionBounds};
 use crate::ui::{Direction, PaneId, TabManager};
 use anyhow::Result;
 use garterm_ipc::{Command, Response};
@@ -47,6 +47,8 @@ pub struct App {
     fullscreen: bool,
     /// Original font size (for reset)
     original_font_size: f32,
+    /// Search state for the focused pane
+    search: SearchState,
 }
 
 impl App {
@@ -196,6 +198,7 @@ impl App {
             net_wm_state_fullscreen,
             fullscreen: false,
             original_font_size: config.font.size,
+            search: SearchState::new(),
         })
     }
 
@@ -319,12 +322,25 @@ impl App {
                             focused: pane.focused,
                             // Only show selection on focused pane
                             selection: if pane.focused { selection_bounds } else { None },
+                            search: None, // Search rendering handled separately
                         }).collect()
                     })
                     .unwrap_or_default();
 
                 if !pane_infos.is_empty() {
-                    self.renderer.render_scene(&tab_bar_data, &pane_infos)?;
+                    // Build search overlay if search is active or has matches
+                    let match_count = self.search.match_count_text();
+                    let search_overlay = if self.search.active || !self.search.matches.is_empty() {
+                        Some(SearchOverlay {
+                            query: &self.search.query,
+                            match_count: &match_count,
+                            active: self.search.active,
+                            case_insensitive: self.search.case_insensitive,
+                        })
+                    } else {
+                        None
+                    };
+                    self.renderer.render_scene_with_search(&tab_bar_data, &pane_infos, search_overlay.as_ref())?;
                 }
                 self.window.connection().flush()?;
             }
@@ -497,10 +513,20 @@ impl App {
                 Ok(true)
             }
 
-            // Search (TODO: implement search)
-            Action::SearchForward | Action::SearchBackward => {
-                // TODO: Implement search
-                Ok(false)
+            // Search
+            Action::SearchForward => {
+                info!("Starting forward search");
+                self.search.start();
+                self.tabs.mark_all_dirty();
+                Ok(true)
+            }
+            Action::SearchBackward => {
+                info!("Starting backward search");
+                self.search.start();
+                // For backward search, we could track direction
+                // but for now just start search mode
+                self.tabs.mark_all_dirty();
+                Ok(true)
             }
 
             // Misc
@@ -1115,12 +1141,25 @@ impl App {
                                     height: pane.height,
                                     focused: pane.focused,
                                     selection: if pane.focused { selection_bounds } else { None },
+                                    search: None, // Search rendering handled separately
                                 }).collect()
                             })
                             .unwrap_or_default();
 
                         if !pane_infos.is_empty() {
-                            self.renderer.render_scene(&tab_bar_data, &pane_infos)?;
+                            // Build search overlay if search is active or has matches
+                            let match_count = self.search.match_count_text();
+                            let search_overlay = if self.search.active || !self.search.matches.is_empty() {
+                                Some(SearchOverlay {
+                                    query: &self.search.query,
+                                    match_count: &match_count,
+                                    active: self.search.active,
+                                    case_insensitive: self.search.case_insensitive,
+                                })
+                            } else {
+                                None
+                            };
+                            self.renderer.render_scene_with_search(&tab_bar_data, &pane_infos, search_overlay.as_ref())?;
                         }
                     }
                 }
@@ -1200,6 +1239,11 @@ impl App {
         tracing::debug!("Key press: {:?}, modifiers: ctrl={}, shift={}, alt={}",
             key, modifiers.ctrl, modifiers.shift, modifiers.alt);
 
+        // Handle search mode input
+        if self.search.active {
+            return self.handle_search_key(key, &modifiers);
+        }
+
         // Convert to config modifiers and key string for lookup
         let config_mods = Self::modifiers_to_config(&modifiers);
         let key_str = Self::key_to_string(&key);
@@ -1243,6 +1287,109 @@ impl App {
         }
 
         Ok(())
+    }
+
+    /// Handle key events in search mode
+    fn handle_search_key(&mut self, key: gartk_core::Key, modifiers: &gartk_core::Modifiers) -> Result<()> {
+        use gartk_core::Key;
+
+        match key {
+            // Escape or Ctrl+C cancels search
+            Key::Escape => {
+                self.search.cancel();
+                self.tabs.mark_all_dirty();
+            }
+            // Enter confirms search (exits input mode but keeps highlights)
+            Key::Return => {
+                self.search.confirm();
+                self.tabs.mark_all_dirty();
+            }
+            // Backspace removes last character
+            Key::Backspace => {
+                self.search.pop_char();
+                self.update_search_matches();
+                self.tabs.mark_all_dirty();
+            }
+            // n/N for next/previous match (when not typing)
+            Key::Char('n') if modifiers.ctrl => {
+                self.search.next_match();
+                self.scroll_to_current_match();
+                self.tabs.mark_all_dirty();
+            }
+            Key::Char('n') if modifiers.shift => {
+                self.search.prev_match();
+                self.scroll_to_current_match();
+                self.tabs.mark_all_dirty();
+            }
+            Key::Char('n') if !modifiers.ctrl && !modifiers.shift && !modifiers.alt => {
+                if self.search.query.is_empty() {
+                    self.search.push_char('n');
+                    self.update_search_matches();
+                } else {
+                    self.search.next_match();
+                    self.scroll_to_current_match();
+                }
+                self.tabs.mark_all_dirty();
+            }
+            Key::Char('N') => {
+                self.search.prev_match();
+                self.scroll_to_current_match();
+                self.tabs.mark_all_dirty();
+            }
+            // Ctrl+I toggles case sensitivity
+            Key::Char('i') if modifiers.ctrl => {
+                self.search.toggle_case_sensitive();
+                self.update_search_matches();
+                self.tabs.mark_all_dirty();
+            }
+            // Regular characters add to query
+            Key::Char(c) => {
+                self.search.push_char(c);
+                self.update_search_matches();
+                self.tabs.mark_all_dirty();
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    /// Update search matches based on current query
+    fn update_search_matches(&mut self) {
+        if let Some(pane) = self.tabs.focused_pane() {
+            let matches = pane.terminal.grid().search(
+                &self.search.query,
+                self.search.case_insensitive,
+            );
+            self.search.set_matches(matches);
+
+            // Auto-scroll to first match
+            if !self.search.matches.is_empty() {
+                self.scroll_to_current_match();
+            }
+        }
+    }
+
+    /// Scroll viewport to show the current match
+    fn scroll_to_current_match(&mut self) {
+        if let Some(m) = self.search.current() {
+            if let Some(pane) = self.tabs.focused_pane_mut() {
+                let grid = pane.terminal.grid();
+                let scrollback_len = grid.scrollback_len();
+
+                // Calculate the scroll offset needed to show this match
+                // Match row is absolute (0 = start of scrollback)
+                if m.row < scrollback_len {
+                    // Match is in scrollback
+                    let offset = scrollback_len - m.row;
+                    pane.terminal.grid_mut().set_scroll_offset(offset);
+                } else {
+                    // Match is in active display - scroll to bottom
+                    pane.terminal.reset_viewport();
+                }
+                pane.mark_dirty();
+            }
+        }
     }
 
     fn handle_button_press(&mut self, event: xproto::ButtonPressEvent) -> Result<()> {
