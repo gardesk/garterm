@@ -1288,6 +1288,13 @@ impl App {
 
         // Normal key translation - send to focused pane
         if let Some(bytes) = KeyboardHandler::translate(key, &modifiers, &modes) {
+            // Clear selection when sending input to terminal (like Alacritty)
+            if !self.selection.is_empty() {
+                self.selection.clear();
+                if let Some(pane) = self.tabs.focused_pane_mut() {
+                    pane.mark_dirty();
+                }
+            }
             if let Some(pane) = self.tabs.focused_pane_mut() {
                 pane.write_pty(&bytes)?;
             }
