@@ -1400,8 +1400,12 @@ impl App {
             return Ok(());
         }
 
+        // Adjust Y coordinate for tab bar offset
+        let content_offset = self.tabs.content_offset() as i16;
+        let adjusted_y = (event.event_y - content_offset).max(0) as f32;
+
         let col = (event.event_x as f32 / cell_w) as usize;
-        let row = (event.event_y as f32 / cell_h) as usize;
+        let row = (adjusted_y / cell_h) as usize;
 
         let button = match event.detail {
             1 => MouseButton::Left,
@@ -1504,8 +1508,13 @@ impl App {
 
     fn handle_button_release(&mut self, event: xproto::ButtonReleaseEvent) -> Result<()> {
         let (cell_w, cell_h) = self.renderer.cell_size();
+
+        // Adjust Y coordinate for tab bar offset
+        let content_offset = self.tabs.content_offset() as i16;
+        let adjusted_y = (event.event_y - content_offset).max(0) as f32;
+
         let col = (event.event_x as f32 / cell_w) as usize;
-        let row = (event.event_y as f32 / cell_h) as usize;
+        let row = (adjusted_y / cell_h) as usize;
 
         let button = match event.detail {
             1 => MouseButton::Left,
@@ -1547,11 +1556,15 @@ impl App {
         if button == MouseButton::Left && self.selection.is_active() {
             self.selection.finish();
 
-            if !self.selection.is_empty() {
-                if let Some(pane) = self.tabs.focused_pane() {
-                    let text = self.selection.get_text(pane.terminal.grid(), pane.terminal.cols());
-                    if !text.is_empty() {
-                        self.clipboard.copy_primary(self.window.connection(), text)?;
+            // Only copy if there's an actual selection (not just a single click)
+            if let Some((start, end)) = self.selection.bounds() {
+                // Skip single-cell selections (just a click, not a drag)
+                if start.row != end.row || start.col != end.col {
+                    if let Some(pane) = self.tabs.focused_pane() {
+                        let text = self.selection.get_text(pane.terminal.grid(), pane.terminal.cols());
+                        if !text.is_empty() {
+                            self.clipboard.copy_primary(self.window.connection(), text)?;
+                        }
                     }
                 }
             }
@@ -1562,8 +1575,13 @@ impl App {
 
     fn handle_motion(&mut self, event: xproto::MotionNotifyEvent) -> Result<()> {
         let (cell_w, cell_h) = self.renderer.cell_size();
+
+        // Adjust Y coordinate for tab bar offset
+        let content_offset = self.tabs.content_offset() as i16;
+        let adjusted_y = (event.event_y - content_offset).max(0) as f32;
+
         let col = (event.event_x as f32 / cell_w) as usize;
-        let row = (event.event_y as f32 / cell_h) as usize;
+        let row = (adjusted_y / cell_h) as usize;
 
         // Get terminal modes from focused pane
         let modes = self.tabs.focused_pane()
