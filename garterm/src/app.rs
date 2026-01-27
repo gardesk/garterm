@@ -1188,9 +1188,16 @@ impl App {
                 Event::SelectionNotify(e) => {
                     let conn = self.window.connection();
                     if let Some(text) = self.clipboard.handle_selection_notify(conn, &e)? {
-                        // Paste the text to focused pane
+                        // Paste the text to focused pane with bracketed paste if enabled
                         if let Some(pane) = self.tabs.focused_pane_mut() {
-                            pane.write_pty(text.as_bytes())?;
+                            if pane.terminal.modes().bracketed_paste {
+                                // Wrap with bracketed paste sequences
+                                pane.write_pty(b"\x1b[200~")?;
+                                pane.write_pty(text.as_bytes())?;
+                                pane.write_pty(b"\x1b[201~")?;
+                            } else {
+                                pane.write_pty(text.as_bytes())?;
+                            }
                         }
                     }
                 }
