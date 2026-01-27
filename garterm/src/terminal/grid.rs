@@ -179,14 +179,25 @@ impl Grid {
         })
     }
 
-    /// Get a line reference
+    /// Get a line reference (active grid only)
     pub fn line(&self, row: usize) -> Option<&Line> {
         self.lines.get(row)
     }
 
-    /// Get a mutable line reference
+    /// Get a mutable line reference (active grid only)
     pub fn line_mut(&mut self, row: usize) -> Option<&mut Line> {
         self.lines.get_mut(row)
+    }
+
+    /// Get a line by absolute row number (scrollback + active)
+    /// Row 0 is the first line of scrollback, scrollback.len() is the first active line
+    pub fn line_absolute(&self, abs_row: usize) -> Option<&Line> {
+        let scrollback_len = self.scrollback.len();
+        if abs_row < scrollback_len {
+            self.scrollback.get(abs_row)
+        } else {
+            self.lines.get(abs_row - scrollback_len)
+        }
     }
 
     /// Scroll the grid up by n lines within a scroll region

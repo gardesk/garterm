@@ -156,7 +156,8 @@ impl Selection {
         match self.mode {
             SelectionMode::Normal => {
                 for row in start.row..=end.row {
-                    if let Some(line) = grid.line(row) {
+                    // Use line_absolute to access scrollback + active lines
+                    if let Some(line) = grid.line_absolute(row) {
                         let start_col = if row == start.row { start.col } else { 0 };
                         let end_col = if row == end.row { end.col } else { cols - 1 };
 
@@ -176,7 +177,7 @@ impl Selection {
             }
             SelectionMode::Line => {
                 for row in start.row..=end.row {
-                    if let Some(line) = grid.line(row) {
+                    if let Some(line) = grid.line_absolute(row) {
                         // Find last non-space character
                         let mut last_non_space = 0;
                         for col in 0..cols {
@@ -206,7 +207,7 @@ impl Selection {
                 };
 
                 for row in start.row..=end.row {
-                    if let Some(line) = grid.line(row) {
+                    if let Some(line) = grid.line_absolute(row) {
                         for col in min_col..=max_col.min(cols - 1) {
                             let c = line[col].c;
                             if c != '\0' {
@@ -230,9 +231,9 @@ impl Selection {
             .join("\n")
     }
 
-    /// Expand selection to word boundaries
+    /// Expand selection to word boundaries (row is absolute)
     pub fn select_word(&mut self, row: usize, col: usize, grid: &Grid, cols: usize) {
-        let Some(line) = grid.line(row) else {
+        let Some(line) = grid.line_absolute(row) else {
             return;
         };
 

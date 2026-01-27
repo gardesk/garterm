@@ -836,10 +836,36 @@ impl App {
         if bounds.0.row == bounds.1.row && bounds.0.col == bounds.1.col {
             return None;
         }
+
+        // Convert absolute rows to visible rows for rendering
+        // Selection stores absolute rows, but renderer uses viewport-relative rows
+        let pane = self.tabs.focused_pane()?;
+        let grid = pane.terminal.grid();
+
+        // Convert absolute rows to visible, skip if not in viewport
+        let start_visible = grid.absolute_row_to_visible(bounds.0.row);
+        let end_visible = grid.absolute_row_to_visible(bounds.1.row);
+
+        // At least part of selection must be visible
+        let start_row = start_visible.unwrap_or(0);
+        let end_row = end_visible.unwrap_or(pane.terminal.rows().saturating_sub(1));
+
+        // If both are None and not overlapping viewport, skip
+        if start_visible.is_none() && end_visible.is_none() {
+            // Check if selection spans the viewport
+            let scrollback_len = grid.scrollback_len();
+            let scroll_offset = grid.scroll_offset();
+            let viewport_start = scrollback_len.saturating_sub(scroll_offset);
+            let viewport_end = viewport_start + pane.terminal.rows();
+            if bounds.1.row < viewport_start || bounds.0.row >= viewport_end {
+                return None;
+            }
+        }
+
         Some(SelectionBounds {
-            start_row: bounds.0.row,
+            start_row,
             start_col: bounds.0.col,
-            end_row: bounds.1.row,
+            end_row,
             end_col: bounds.1.col,
             is_block: matches!(self.selection.mode(), SelectionMode::Block),
         })
@@ -1475,6 +1501,8 @@ impl App {
                 self.last_click = now;
 
                 if let Some(pane) = self.tabs.focused_pane() {
+                    // Convert viewport row to absolute row (accounts for scrollback)
+                    let abs_row = pane.terminal.grid().visible_row_to_absolute(row);
                     match self.click_count {
                         1 => {
                             // Single click: clear any existing selection, prepare for potential drag
@@ -1484,13 +1512,13 @@ impl App {
                             } else {
                                 SelectionMode::Normal
                             };
-                            self.selection.start(row, col, mode);
+                            self.selection.start(abs_row, col, mode);
                         }
                         2 => {
-                            self.selection.select_word(row, col, pane.terminal.grid(), pane.terminal.cols());
+                            self.selection.select_word(abs_row, col, pane.terminal.grid(), pane.terminal.cols());
                         }
                         _ => {
-                            self.selection.select_line(row, pane.terminal.cols());
+                            self.selection.select_line(abs_row, pane.terminal.cols());
                         }
                     }
                 }
@@ -1638,7 +1666,11 @@ impl App {
 
         // Update selection during drag
         if self.selection.is_active() && state & 0x100 != 0 {
-            self.selection.update(row, col);
+            if let Some(pane) = self.tabs.focused_pane() {
+                // Convert viewport row to absolute row
+                let abs_row = pane.terminal.grid().visible_row_to_absolute(row);
+                self.selection.update(abs_row, col);
+            }
             if let Some(pane) = self.tabs.focused_pane_mut() {
                 pane.mark_dirty();
             }
