@@ -1664,15 +1664,39 @@ impl App {
             }
         }
 
-        // Update selection during drag
+        // Update selection during drag (with auto-scroll when outside bounds)
         if self.selection.is_active() && state & 0x100 != 0 {
-            if let Some(pane) = self.tabs.focused_pane() {
-                // Convert viewport row to absolute row
-                let abs_row = pane.terminal.grid().visible_row_to_absolute(row);
-                self.selection.update(abs_row, col);
-            }
             if let Some(pane) = self.tabs.focused_pane_mut() {
-                pane.mark_dirty();
+                let rows = pane.terminal.rows();
+                let content_height = (rows as f32 * cell_h) as i16;
+                let raw_y = event.event_y - content_offset;
+
+                // Check if mouse is outside content bounds
+                if raw_y < 0 {
+                    // Mouse above content - scroll up into scrollback
+                    let scroll_amount = ((-raw_y) as usize / cell_h as usize).max(1).min(5);
+                    pane.terminal.scroll_up(scroll_amount);
+
+                    // Update selection to top visible row
+                    let abs_row = pane.terminal.grid().visible_row_to_absolute(0);
+                    self.selection.update(abs_row, col);
+                    pane.mark_dirty();
+                } else if raw_y > content_height {
+                    // Mouse below content - scroll down (toward bottom)
+                    let overshoot = (raw_y - content_height) as usize;
+                    let scroll_amount = (overshoot / cell_h as usize).max(1).min(5);
+                    pane.terminal.scroll_down(scroll_amount);
+
+                    // Update selection to bottom visible row
+                    let abs_row = pane.terminal.grid().visible_row_to_absolute(rows.saturating_sub(1));
+                    self.selection.update(abs_row, col);
+                    pane.mark_dirty();
+                } else {
+                    // Normal case - mouse within bounds
+                    let abs_row = pane.terminal.grid().visible_row_to_absolute(row);
+                    self.selection.update(abs_row, col);
+                    pane.mark_dirty();
+                }
             }
         }
 
