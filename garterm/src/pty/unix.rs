@@ -222,7 +222,28 @@ impl Pty {
 impl Drop for Pty {
     fn drop(&mut self) {
         // The master fd is closed automatically by OwnedFd
-        // Wait for child to prevent zombie
+
+        // Send SIGHUP to the entire process group (shell + all children)
+        // The shell became a session leader via setsid(), so its PID is the PGID
+        // Using negative PID targets the whole process group
+        unsafe {
+            libc::kill(-(self.child_pid.as_raw()), libc::SIGHUP);
+        }
+
+        // Give processes time to shut down gracefully (save state, etc.)
+        // Complex apps like VSCode need more than a few ms
+        for _ in 0..20 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            match waitpid(self.child_pid, Some(WaitPidFlag::WNOHANG)) {
+                Ok(WaitStatus::StillAlive) => continue,
+                _ => return, // Already exited
+            }
+        }
+
+        // Still alive after 2 seconds, force kill
+        unsafe {
+            libc::kill(-(self.child_pid.as_raw()), libc::SIGKILL);
+        }
         let _ = waitpid(self.child_pid, Some(WaitPidFlag::WNOHANG));
     }
 }
