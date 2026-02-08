@@ -1518,7 +1518,7 @@ impl App {
                             self.selection.select_word(abs_row, col, pane.terminal.grid(), pane.terminal.cols());
                         }
                         _ => {
-                            self.selection.select_line(abs_row, pane.terminal.cols());
+                            self.selection.select_line(abs_row, pane.terminal.cols(), pane.terminal.grid());
                         }
                     }
                 }

@@ -259,10 +259,45 @@ impl Selection {
         self.active = false;
     }
 
-    /// Select entire line
-    pub fn select_line(&mut self, row: usize, cols: usize) {
-        self.start = Some(SelectionPoint::new(row, 0));
-        self.end = Some(SelectionPoint::new(row, cols - 1));
+    /// Select entire logical line (including wrapped continuations)
+    /// Row is absolute (scrollback + active)
+    pub fn select_line(&mut self, row: usize, cols: usize, grid: &Grid) {
+        // Find the start of the logical line by searching backwards
+        // A line is a continuation if the PREVIOUS line has wrapped=true
+        let mut start_row = row;
+        while start_row > 0 {
+            if let Some(prev_line) = grid.line_absolute(start_row - 1) {
+                if prev_line.wrapped {
+                    // Previous line wraps into this one, keep going back
+                    start_row -= 1;
+                } else {
+                    // Previous line doesn't wrap, we found the start
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        // Find the end of the logical line by searching forwards
+        // Keep going while the current line has wrapped=true
+        let mut end_row = row;
+        loop {
+            if let Some(line) = grid.line_absolute(end_row) {
+                if line.wrapped {
+                    // This line wraps to the next, keep going
+                    end_row += 1;
+                } else {
+                    // This line doesn't wrap, we found the end
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        self.start = Some(SelectionPoint::new(start_row, 0));
+        self.end = Some(SelectionPoint::new(end_row, cols - 1));
         self.mode = SelectionMode::Line;
         self.active = false;
     }
