@@ -51,6 +51,21 @@ pub struct Pty {
 impl Pty {
     /// Spawn a new PTY with the given shell command
     pub fn spawn(shell: &str, size: PtySize, cwd: Option<&Path>) -> Result<Self, PtyError> {
+        // Resolve shell path portably: if the configured absolute path doesn't
+        // exist (e.g. "/usr/bin/fish" on NixOS), fall back to just the binary
+        // name so execvp can find it via PATH.
+        let shell = if Path::new(shell).is_absolute() && !Path::new(shell).exists() {
+            let basename = Path::new(shell)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(shell);
+            tracing::warn!("Shell '{}' not found, resolving '{}' via PATH", shell, basename);
+            basename.to_string()
+        } else {
+            shell.to_string()
+        };
+        let shell = shell.as_str();
+
         // Open PTY pair
         let OpenptyResult { master, slave } = openpty(None, None)?;
 
