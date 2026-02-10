@@ -143,11 +143,12 @@ impl Renderer {
         window: u32,
         width: u32,
         height: u32,
+        font_family: &str,
         font_size: f32,
         colors: ColorPalette,
     ) -> Result<Self, GpuError> {
         let gpu = GpuContext::new(window, width, height).await?;
-        let fonts = FontCache::new(font_size).expect("Failed to load fonts");
+        let fonts = FontCache::new(font_family, font_size).expect("Failed to load fonts");
 
         // Create glyph atlas
         let atlas = GlyphAtlas::new(1024, 1024);

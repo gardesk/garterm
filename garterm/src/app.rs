@@ -114,6 +114,7 @@ impl App {
             window.id(),
             actual_width,
             actual_height,
+            &config.font.family,
             font_size,
             colors,
         ).await?;

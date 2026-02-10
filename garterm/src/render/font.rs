@@ -1,5 +1,6 @@
 use fontdue::{Font, FontSettings};
 use std::collections::HashMap;
+use std::process::Command;
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -32,36 +33,93 @@ pub struct FontCache {
 }
 
 impl FontCache {
+    /// Resolve a font family + style to a file path using fontconfig (fc-match).
+    fn fc_match(family: &str, style: &str) -> Option<String> {
+        let query = format!("{}:style={}", family, style);
+        Command::new("fc-match")
+            .args(["-f", "%{file}", &query])
+            .output()
+            .ok()
+            .and_then(|out| {
+                if out.status.success() {
+                    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    if !path.is_empty() && std::path::Path::new(&path).exists() {
+                        Some(path)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+    }
+
     /// Load fonts from system or embedded fallback
-    pub fn new(size: f32) -> Result<Self, FontError> {
-        // Try to load system fonts, fall back to embedded
-        let regular = Arc::new(Self::load_font(&[
+    pub fn new(family: &str, size: f32) -> Result<Self, FontError> {
+        // Build font paths: try fontconfig first, then hardcoded fallbacks
+        let mut regular_paths: Vec<String> = Vec::new();
+        let mut bold_paths: Vec<String> = Vec::new();
+        let mut italic_paths: Vec<String> = Vec::new();
+        let mut bold_italic_paths: Vec<String> = Vec::new();
+
+        // Resolve via fontconfig
+        if let Some(p) = Self::fc_match(family, "Regular") {
+            tracing::debug!("fc-match {family}:Regular -> {p}");
+            regular_paths.push(p);
+        }
+        if let Some(p) = Self::fc_match(family, "Bold") {
+            bold_paths.push(p);
+        }
+        if let Some(p) = Self::fc_match(family, "Italic") {
+            italic_paths.push(p);
+        }
+        if let Some(p) = Self::fc_match(family, "Bold Italic") {
+            bold_italic_paths.push(p);
+        }
+
+        // Hardcoded fallbacks
+        let regular_fallbacks = [
             "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf",
             "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
             "/usr/share/fonts/google-noto/NotoSansMono-Regular.ttf",
-        ])?);
-
-        let bold = Arc::new(Self::load_font(&[
+        ];
+        let bold_fallbacks = [
             "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Bold.ttf",
             "/usr/share/fonts/TTF/DejaVuSansMono-Bold.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
-        ])
-        .unwrap_or_else(|_| (*regular).clone()));
-
-        let italic = Arc::new(Self::load_font(&[
+        ];
+        let italic_fallbacks = [
             "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Italic.ttf",
             "/usr/share/fonts/TTF/DejaVuSansMono-Oblique.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Oblique.ttf",
-        ])
-        .unwrap_or_else(|_| (*regular).clone()));
-
-        let bold_italic = Arc::new(Self::load_font(&[
+        ];
+        let bold_italic_fallbacks = [
             "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-BoldItalic.ttf",
             "/usr/share/fonts/TTF/DejaVuSansMono-BoldOblique.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-BoldOblique.ttf",
-        ])
-        .unwrap_or_else(|_| (*bold).clone()));
+        ];
+
+        regular_paths.extend(regular_fallbacks.iter().map(|s| s.to_string()));
+        bold_paths.extend(bold_fallbacks.iter().map(|s| s.to_string()));
+        italic_paths.extend(italic_fallbacks.iter().map(|s| s.to_string()));
+        bold_italic_paths.extend(bold_italic_fallbacks.iter().map(|s| s.to_string()));
+
+        let regular_refs: Vec<&str> = regular_paths.iter().map(|s| s.as_str()).collect();
+        let bold_refs: Vec<&str> = bold_paths.iter().map(|s| s.as_str()).collect();
+        let italic_refs: Vec<&str> = italic_paths.iter().map(|s| s.as_str()).collect();
+        let bold_italic_refs: Vec<&str> = bold_italic_paths.iter().map(|s| s.as_str()).collect();
+
+        let regular = Arc::new(Self::load_font(&regular_refs)?);
+
+        let bold = Arc::new(Self::load_font(&bold_refs)
+            .unwrap_or_else(|_| (*regular).clone()));
+
+        let italic = Arc::new(Self::load_font(&italic_refs)
+            .unwrap_or_else(|_| (*regular).clone()));
+
+        let bold_italic = Arc::new(Self::load_font(&bold_italic_refs)
+            .unwrap_or_else(|_| (*bold).clone()));
 
         // Load fallback fonts for symbols, icons, box drawing, etc.
         let fallback_fonts = Self::load_fallback_fonts();
@@ -94,33 +152,41 @@ impl FontCache {
 
     /// Load fallback fonts for symbols and missing glyphs
     fn load_fallback_fonts() -> Vec<Arc<Font>> {
-        // Build fallback paths including user fonts
         let mut fallback_paths: Vec<std::path::PathBuf> = Vec::new();
 
-        // Add user font directories first (higher priority)
+        // Resolve via fontconfig first (works on NixOS and all distros)
+        let fc_families = [
+            ("Symbols Nerd Font Mono", "Regular"),
+            ("Symbols Nerd Font", "Regular"),
+            ("Noto Sans Symbols2", "Regular"),
+            ("DejaVu Sans", "Book"),
+            ("Noto Sans", "Regular"),
+            ("Noto Emoji", "Regular"),
+        ];
+        for (family, style) in fc_families {
+            if let Some(path) = Self::fc_match(family, style) {
+                fallback_paths.push(std::path::PathBuf::from(path));
+            }
+        }
+
+        // Add user font directories
         if let Some(home) = dirs::home_dir() {
             let user_fonts = home.join(".local/share/fonts");
             fallback_paths.push(user_fonts.join("NerdFontsSymbols/SymbolsNerdFontMono-Regular.ttf"));
             fallback_paths.push(user_fonts.join("NerdFontsSymbols/SymbolsNerdFont-Regular.ttf"));
         }
 
-        // System paths
+        // Hardcoded system paths as final fallback
         let system_paths = [
-            // Nerd Fonts (icons, powerline symbols)
             "/usr/share/fonts/TTF/SymbolsNerdFont-Regular.ttf",
             "/usr/share/fonts/TTF/SymbolsNerdFontMono-Regular.ttf",
-            // Noto fonts (broad Unicode coverage)
             "/usr/share/fonts/google-noto/NotoSansSymbols2-Regular.ttf",
             "/usr/share/fonts/google-noto-vf/NotoSansSymbols[wght].ttf",
-            // Symbola (excellent Unicode coverage)
             "/usr/share/fonts/gdouros-symbola/Symbola.ttf",
-            // DejaVu (good Unicode coverage including box drawing)
             "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
             "/usr/share/fonts/TTF/DejaVuSans.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            // Noto Sans (general fallback)
             "/usr/share/fonts/google-noto/NotoSans-Regular.ttf",
-            // Noto Emoji
             "/usr/share/fonts/google-noto-emoji-fonts/NotoEmoji-Regular.ttf",
             "/usr/share/fonts/google-noto-color-emoji-fonts/NotoColorEmoji.ttf",
         ];
