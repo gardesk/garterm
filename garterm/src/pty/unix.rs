@@ -107,8 +107,9 @@ impl Pty {
 
                 execvp(&shell_cstr, &[argv0]).ok();
 
-                // If exec fails, exit
-                std::process::exit(127);
+                // If exec fails, use _exit to avoid running atexit handlers
+                // (which can crash in GPU drivers like NVIDIA after fork)
+                unsafe { libc::_exit(127) };
             }
             Ok(ForkResult::Parent { child }) => {
                 // Parent process
