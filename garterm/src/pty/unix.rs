@@ -105,7 +105,16 @@ impl Pty {
                     .unwrap_or_else(|| shell.to_string());
                 let argv0 = CString::new(shell_name).unwrap();
 
-                execvp(&shell_cstr, &[argv0]).ok();
+                // execvp only returns on error (Ok is Infallible)
+                let e = execvp(&shell_cstr, &[argv0]).unwrap_err();
+                let msg = format!("garterm: failed to exec '{}': {}\r\n", shell, e);
+                let _ = unsafe {
+                    libc::write(
+                        libc::STDERR_FILENO,
+                        msg.as_ptr() as *const _,
+                        msg.len(),
+                    )
+                };
 
                 // If exec fails, use _exit to avoid running atexit handlers
                 // (which can crash in GPU drivers like NVIDIA after fork)
