@@ -1,4 +1,5 @@
 use crate::config::{Action, Config, KeybindSet, LuaRuntime, Modifiers as ConfigModifiers, TerminalCommand, expand_tilde};
+use crate::terminal::{ClipboardEvent, ClipboardSelection};
 use crate::input::{Clipboard, KeyboardHandler, MouseButton, MouseEvent, MouseHandler, SearchState, Selection, SelectionMode};
 use crate::ipc::IpcServer;
 use crate::pty::{PtySize, ReceivedSignal, SignalHandler};
@@ -49,6 +50,8 @@ pub struct App {
     original_font_size: f32,
     /// Search state for the focused pane
     search: SearchState,
+    /// Allow programs to write clipboard via OSC 52
+    clipboard_write: bool,
 }
 
 impl App {
@@ -200,6 +203,7 @@ impl App {
             fullscreen: false,
             original_font_size: config.font.size,
             search: SearchState::new(),
+            clipboard_write: config.terminal.clipboard_write,
         })
     }
 
@@ -273,6 +277,52 @@ impl App {
                     // Check startup command deadline (fallback for shells without OSC 133)
                     if pane.has_pending_startup_cmd() {
                         pane.check_startup_deadline();
+                    }
+
+                    // Handle OSC 52 clipboard events
+                    let clipboard_events: Vec<_> = pane.terminal.take_clipboard_events().collect();
+                    for event in clipboard_events {
+                        match event {
+                            ClipboardEvent::Set(sel, data) => {
+                                if self.clipboard_write {
+                                    if let Ok(text) = String::from_utf8(data) {
+                                        let conn = self.window.connection();
+                                        match sel {
+                                            ClipboardSelection::Clipboard => {
+                                                let _ = self.clipboard.copy_clipboard(conn, text);
+                                            }
+                                            ClipboardSelection::Primary => {
+                                                let _ = self.clipboard.copy_primary(conn, text);
+                                            }
+                                            ClipboardSelection::Both => {
+                                                let _ = self.clipboard.copy_clipboard(conn, text.clone());
+                                                let _ = self.clipboard.copy_primary(conn, text);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            ClipboardEvent::Clear(sel) => {
+                                if self.clipboard_write {
+                                    let conn = self.window.connection();
+                                    match sel {
+                                        ClipboardSelection::Clipboard => {
+                                            let _ = self.clipboard.copy_clipboard(conn, String::new());
+                                        }
+                                        ClipboardSelection::Primary => {
+                                            let _ = self.clipboard.copy_primary(conn, String::new());
+                                        }
+                                        ClipboardSelection::Both => {
+                                            let _ = self.clipboard.copy_clipboard(conn, String::new());
+                                            let _ = self.clipboard.copy_primary(conn, String::new());
+                                        }
+                                    }
+                                }
+                            }
+                            ClipboardEvent::Query(_) => {
+                                // OSC 52 query - not implemented (security consideration)
+                            }
+                        }
                     }
                 }
             }
