@@ -18,7 +18,7 @@ gartk-core = { path = "../gartk/gartk-core" }
 gartk-x11 = { path = "../gartk/gartk-x11" }
 
 # Terminal parsing
-vte = "0.13"
+vte = { version = "0.13", default-features = false }
 
 # GPU rendering
 wgpu = "24"
