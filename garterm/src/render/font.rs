@@ -1,5 +1,6 @@
 use fontdue::{Font, FontSettings};
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::process::Command;
 use std::sync::Arc;
 use thiserror::Error;
@@ -26,6 +27,10 @@ pub struct FontCache {
     fonts: HashMap<FontStyle, Arc<Font>>,
     /// Fallback fonts for missing glyphs (symbols, icons, etc.)
     fallback_fonts: Vec<Arc<Font>>,
+    /// Fonts discovered dynamically via fontconfig charset queries
+    dynamic_fallbacks: RefCell<Vec<Arc<Font>>>,
+    /// Codepoints we've already attempted fontconfig discovery for
+    tried_codepoints: RefCell<HashSet<char>>,
     size: f32,
     cell_width: f32,
     cell_height: f32,
@@ -143,6 +148,8 @@ impl FontCache {
         Ok(Self {
             fonts,
             fallback_fonts,
+            dynamic_fallbacks: RefCell::new(Vec::new()),
+            tried_codepoints: RefCell::new(HashSet::new()),
             size,
             cell_width,
             cell_height,
@@ -254,6 +261,8 @@ impl FontCache {
         Self {
             fonts: self.fonts.clone(),
             fallback_fonts: self.fallback_fonts.clone(),
+            dynamic_fallbacks: RefCell::new(self.dynamic_fallbacks.borrow().clone()),
+            tried_codepoints: RefCell::new(self.tried_codepoints.borrow().clone()),
             size: new_size,
             cell_width,
             cell_height,
@@ -268,7 +277,9 @@ impl FontCache {
         })
     }
 
-    /// Rasterize a character, using fallback fonts if needed
+    /// Rasterize a character, using fallback fonts if needed.
+    /// Falls back through static fallbacks, then dynamically-discovered fonts,
+    /// and finally queries fontconfig for a font containing the codepoint.
     pub fn rasterize(&self, c: char, style: FontStyle) -> (fontdue::Metrics, Vec<u8>) {
         let primary_font = self.font(style);
 
@@ -277,15 +288,77 @@ impl FontCache {
             return primary_font.rasterize(c, self.size);
         }
 
-        // Try fallback fonts
+        // Try static fallback fonts
         for fallback in &self.fallback_fonts {
             if fallback.lookup_glyph_index(c) != 0 {
                 return fallback.rasterize(c, self.size);
             }
         }
 
+        // Try already-discovered dynamic fallbacks
+        for fallback in self.dynamic_fallbacks.borrow().iter() {
+            if fallback.lookup_glyph_index(c) != 0 {
+                return fallback.rasterize(c, self.size);
+            }
+        }
+
+        // Ask fontconfig to find a font for this codepoint (once per codepoint)
+        if !self.tried_codepoints.borrow().contains(&c) {
+            self.tried_codepoints.borrow_mut().insert(c);
+            if let Some(font) = self.discover_font_for_char(c) {
+                let result = font.rasterize(c, self.size);
+                self.dynamic_fallbacks.borrow_mut().push(font);
+                return result;
+            }
+        }
+
         // No font has this glyph - return from primary (will be placeholder/tofu)
         primary_font.rasterize(c, self.size)
+    }
+
+    /// Query fontconfig for a font that contains the given character
+    fn discover_font_for_char(&self, c: char) -> Option<Arc<Font>> {
+        let codepoint = c as u32;
+        let query = format!(":charset={:04x}", codepoint);
+
+        let output = Command::new("fc-list")
+            .args(["-f", "%{file}\n", &query])
+            .output()
+            .ok()?;
+
+        if !output.status.success() {
+            return None;
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut seen = HashSet::new();
+
+        for line in stdout.lines() {
+            let path = line.trim();
+            if path.is_empty() || !seen.insert(path.to_string()) {
+                continue;
+            }
+
+            // Skip color emoji fonts (fontdue can't rasterize bitmap/COLR fonts)
+            if path.contains("ColorEmoji") {
+                continue;
+            }
+
+            if let Ok(data) = std::fs::read(path) {
+                if let Ok(font) = Font::from_bytes(data, FontSettings::default()) {
+                    if font.lookup_glyph_index(c) != 0 {
+                        tracing::debug!(
+                            "Dynamic font fallback: U+{:04X} '{}' -> {}",
+                            codepoint, c, path
+                        );
+                        return Some(Arc::new(font));
+                    }
+                }
+            }
+        }
+
+        tracing::debug!("No font found for U+{:04X} '{}'", codepoint, c);
+        None
     }
 
     /// Check if any font can render this character
@@ -294,6 +367,9 @@ impl FontCache {
         if primary.lookup_glyph_index(c) != 0 {
             return true;
         }
-        self.fallback_fonts.iter().any(|f| f.lookup_glyph_index(c) != 0)
+        if self.fallback_fonts.iter().any(|f| f.lookup_glyph_index(c) != 0) {
+            return true;
+        }
+        self.dynamic_fallbacks.borrow().iter().any(|f| f.lookup_glyph_index(c) != 0)
     }
 }
