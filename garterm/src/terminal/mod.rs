@@ -798,8 +798,15 @@ impl vte::Perform for Performer<'_> {
                         data => {
                             // Set clipboard (base64 encoded)
                             use base64::Engine;
-                            if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(data) {
-                                self.term.clipboard_events.push_back(ClipboardEvent::Set(selection, decoded));
+                            tracing::debug!("OSC 52: received base64 payload of {} bytes", data.len());
+                            match base64::engine::general_purpose::STANDARD.decode(data) {
+                                Ok(decoded) => {
+                                    tracing::debug!("OSC 52: decoded {} bytes of clipboard text", decoded.len());
+                                    self.term.clipboard_events.push_back(ClipboardEvent::Set(selection, decoded));
+                                }
+                                Err(e) => {
+                                    tracing::warn!("OSC 52: base64 decode failed ({} bytes payload): {}", data.len(), e);
+                                }
                             }
                         }
                     }

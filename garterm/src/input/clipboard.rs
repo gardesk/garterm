@@ -59,6 +59,7 @@ impl Clipboard {
 
     /// Copy text to CLIPBOARD (for Ctrl+Shift+C)
     pub fn copy_clipboard(&mut self, conn: &Connection, text: String) -> Result<()> {
+        tracing::debug!("Clipboard: copy_clipboard called with {} bytes", text.len());
         self.clipboard_content = Some(text);
         conn.inner()
             .set_selection_owner(self.window, self.atoms.clipboard, x11rb::CURRENT_TIME)?;
@@ -123,6 +124,7 @@ impl Clipboard {
         } else if event.target == self.atoms.utf8_string {
             // Client wants UTF-8 text
             if let Some(text) = content {
+                tracing::debug!("Clipboard: serving {} bytes to requestor", text.len());
                 conn.inner().change_property(
                     xproto::PropMode::REPLACE,
                     event.requestor,
@@ -134,6 +136,7 @@ impl Clipboard {
                 )?;
                 event.property
             } else {
+                tracing::debug!("Clipboard: selection request but no content");
                 0 // No data
             }
         } else {

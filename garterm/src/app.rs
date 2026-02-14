@@ -284,6 +284,7 @@ impl App {
                     for event in clipboard_events {
                         match event {
                             ClipboardEvent::Set(sel, data) => {
+                                tracing::debug!("OSC 52 event: Set({:?}, {} bytes)", sel, data.len());
                                 if self.clipboard_write {
                                     if let Ok(text) = String::from_utf8(data) {
                                         let conn = self.window.connection();
