@@ -123,16 +123,24 @@ impl GpuContext {
         window: u32,
         width: u32,
         height: u32,
+        renderer: &crate::config::Renderer,
     ) -> Result<Self, GpuError> {
         // Open Xlib display for wgpu
         let xlib_display = XlibDisplay::open()?;
         let display = xlib_display.display_ptr();
         let screen = xlib_display.default_screen();
 
-        // Try Vulkan first (higher texture limits), fall back to GL
-        // GL has a 2048 texture limit on some systems which breaks full-screen windows
+        use crate::config::Renderer;
+        let (backends, force_fallback) = match renderer {
+            Renderer::Vulkan => (wgpu::Backends::VULKAN, false),
+            Renderer::Gl => (wgpu::Backends::GL, false),
+            Renderer::Software => (wgpu::Backends::VULKAN | wgpu::Backends::GL, true),
+            Renderer::Auto => (wgpu::Backends::VULKAN | wgpu::Backends::GL, false),
+        };
+        tracing::info!("Renderer config: {:?} (backends: {:?}, fallback: {})", renderer, backends, force_fallback);
+
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN | wgpu::Backends::GL,
+            backends,
             ..Default::default()
         });
 
@@ -144,7 +152,7 @@ impl GpuContext {
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::LowPower,
                 compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
+                force_fallback_adapter: force_fallback,
             })
             .await
             .ok_or(GpuError::NoAdapter)?;

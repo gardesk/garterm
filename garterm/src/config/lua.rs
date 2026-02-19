@@ -113,6 +113,14 @@ fn parse_terminal_table(table: &mlua::Table) -> Config {
     if let Ok(vsync) = table.get::<bool>("vsync") {
         config.general.vsync = vsync;
     }
+    if let Ok(renderer) = table.get::<String>("renderer") {
+        config.general.renderer = match renderer.as_str() {
+            "vulkan" => crate::config::Renderer::Vulkan,
+            "gl" | "opengl" => crate::config::Renderer::Gl,
+            "software" | "cpu" | "sw" => crate::config::Renderer::Software,
+            _ => crate::config::Renderer::Auto,
+        };
+    }
     if let Ok(cwd) = table.get::<String>("working_directory") {
         config.general.working_directory = Some(cwd.into());
     }

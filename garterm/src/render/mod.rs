@@ -146,8 +146,9 @@ impl Renderer {
         font_family: &str,
         font_size: f32,
         colors: ColorPalette,
+        renderer_config: &crate::config::Renderer,
     ) -> Result<Self, GpuError> {
-        let gpu = GpuContext::new(window, width, height).await?;
+        let gpu = GpuContext::new(window, width, height, renderer_config).await?;
         let fonts = FontCache::new(font_family, font_size).expect("Failed to load fonts");
 
         // Create glyph atlas

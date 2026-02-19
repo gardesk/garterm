@@ -56,6 +56,26 @@ pub struct Config {
     pub keybinds: keybinds::KeybindConfig,
 }
 
+/// GPU rendering backend selection
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Renderer {
+    /// Auto-detect: Vulkan first, then GL (default)
+    Auto,
+    /// Force Vulkan backend
+    Vulkan,
+    /// Force OpenGL backend
+    Gl,
+    /// Force software rendering (CPU-based, no GPU required)
+    Software,
+}
+
+impl Default for Renderer {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
 /// General settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -73,6 +93,11 @@ pub struct GeneralConfig {
     /// Use VSync-based rendering (may not work on Asahi Linux)
     pub vsync: bool,
 
+    /// GPU rendering backend: "auto", "vulkan", "gl", "software"
+    /// Use "software" to avoid GPU crashes on NVIDIA (Xid 79) or when no GPU is available
+    /// Use "gl" to force OpenGL instead of Vulkan (more stable on some NVIDIA setups)
+    pub renderer: Renderer,
+
     /// Log level: "error", "warn", "info", "debug", "trace"
     pub log_level: String,
 }
@@ -84,6 +109,7 @@ impl Default for GeneralConfig {
             shell_args: vec![],
             working_directory: None,
             vsync: false,
+            renderer: Renderer::Auto,
             log_level: "info".into(),
         }
     }

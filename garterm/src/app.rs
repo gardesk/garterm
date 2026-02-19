@@ -120,6 +120,7 @@ impl App {
             &config.font.family,
             font_size,
             colors,
+            &config.general.renderer,
         ).await?;
 
         // Calculate actual cell size from loaded fonts

@@ -25,6 +25,13 @@
 #   true  = VSync/dirty-flag only (lower CPU, needs proper VSync support)
 vsync = false
 
+# GPU rendering backend: "auto", "vulkan", "gl", "software"
+#   auto     = Vulkan first, then GL (default)
+#   vulkan   = Force Vulkan
+#   gl       = Force OpenGL (recommended for NVIDIA + picom)
+#   software = CPU rendering (no GPU required, avoids all GPU crashes)
+# renderer = "auto"
+
 # Log level: "error", "warn", "info", "debug", "trace"
 # log_level = "info"
 
