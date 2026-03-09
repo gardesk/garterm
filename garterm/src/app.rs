@@ -938,7 +938,14 @@ impl App {
     fn key_to_string(key: &gartk_core::Key) -> String {
         use gartk_core::Key;
         match key {
-            Key::Char(c) => c.to_lowercase().to_string(),
+            Key::Char(c) => match c {
+                '=' => "equal".into(),
+                '+' => "plus".into(),
+                '-' => "minus".into(),
+                '_' => "minus".into(),   // Shift+minus
+                '0' => "0".into(),
+                _ => c.to_lowercase().to_string(),
+            },
             Key::Return => "return".into(),
             Key::Tab => "tab".into(),
             Key::Backspace => "backspace".into(),
