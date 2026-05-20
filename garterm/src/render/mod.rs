@@ -557,19 +557,30 @@ impl Renderer {
             );
         }
 
-        // Border lives on the focused pane only, and only on the edges shared
-        // with another pane — drawing along terminal edges fights with the
-        // window's rounded corners. The dim above is what tells you which
-        // unfocused panes are unfocused; the border tells you which is active.
+        // Pane dividers. Each pane draws a border along its internal edges
+        // (edges shared with another pane) — never along the terminal-edge
+        // sides, which would clash with the window's rounded corners.
+        //
+        // We draw unfocused panes' dividers first in a dim color, then the
+        // focused pane's dividers last in bright blue. Because every shared
+        // edge is touched twice (once from each side), the focused pane's
+        // bright pass overwrites the dim pass on edges adjacent to it, so
+        // its edges read as bright while edges between two unfocused panes
+        // stay dim.
         if panes.len() > 1 {
+            for pane in panes {
+                if pane.focused {
+                    continue;
+                }
+                let edges = internal_edges(pane, panes);
+                self.add_pane_border_edges_unfocused(
+                    pane.x, pane.y, pane.width, pane.height, edges,
+                );
+            }
             if let Some(focused) = panes.iter().find(|p| p.focused) {
                 let edges = internal_edges(focused, panes);
                 self.add_pane_border_edges(
-                    focused.x,
-                    focused.y,
-                    focused.width,
-                    focused.height,
-                    edges,
+                    focused.x, focused.y, focused.width, focused.height, edges,
                 );
             }
         }
@@ -893,24 +904,22 @@ impl Renderer {
     }
 
     /// Add a border around a pane
-    /// Draw a border only on the specified edges of a pane. Used to outline
-    /// the focused pane along its shared edges with sibling panes, without
-    /// drawing on the outer terminal edges (which would clip against the
-    /// window's rounded corners).
-    fn add_pane_border_edges(
+    /// Draw a border only on the specified edges of a pane. Borders run along
+    /// pane-pane boundaries (never along terminal edges, which would clash
+    /// with the window's rounded corners).
+    fn add_pane_border_edges_with(
         &mut self,
         x: u32,
         y: u32,
         width: u32,
         height: u32,
         edges: PaneEdges,
+        color: [f32; 4],
+        border_width: f32,
     ) {
         let (surface_w, surface_h) = self.gpu.size();
         let to_ndc_x = |px: f32| (px / surface_w as f32) * 2.0 - 1.0;
         let to_ndc_y = |py: f32| 1.0 - (py / surface_h as f32) * 2.0;
-
-        let border_width = 2.0;
-        let color = [0.4, 0.7, 1.0, 1.0]; // Bright blue for focused pane
 
         let x = x as f32;
         let y = y as f32;
@@ -945,6 +954,40 @@ impl Renderer {
                 0.0, 0.0, 0.0, 0.0, color, 0.0,
             );
         }
+    }
+
+    /// Bright blue 2px border for the focused pane's internal edges.
+    fn add_pane_border_edges(
+        &mut self,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        edges: PaneEdges,
+    ) {
+        self.add_pane_border_edges_with(
+            x, y, width, height, edges,
+            [0.4, 0.7, 1.0, 1.0],
+            2.0,
+        );
+    }
+
+    /// Subtle gray 1px border for unfocused panes' internal edges. Dividers
+    /// between two unfocused panes stay visible without competing with the
+    /// focused pane's bright border.
+    fn add_pane_border_edges_unfocused(
+        &mut self,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        edges: PaneEdges,
+    ) {
+        self.add_pane_border_edges_with(
+            x, y, width, height, edges,
+            [0.35, 0.35, 0.4, 1.0],
+            1.0,
+        );
     }
 
     fn add_pane_border(&mut self, x: u32, y: u32, width: u32, height: u32, focused: bool) {
