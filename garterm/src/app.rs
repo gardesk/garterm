@@ -210,26 +210,48 @@ impl App {
 
     /// Run the application event loop
     pub fn run(&mut self) -> Result<()> {
-        let mut buf = [0u8; 4096];
+        let mut buf = [0u8; 8192];
 
         let signal_fd = self.signals.as_raw_fd();
         let x11_fd = self.window.connection().inner().stream().as_raw_fd();
 
+        // Reusable fd list across iterations
+        let mut pty_fds: Vec<std::os::fd::RawFd> = Vec::with_capacity(8);
+
         while self.running {
-            // Poll signal and X11 file descriptors
+            // Collect PTY fds from all panes so PTY data wakes us immediately
+            pty_fds.clear();
+            for tab in self.tabs.all_tabs_mut() {
+                for pane in tab.panes.values() {
+                    pty_fds.push(pane.pty_fd());
+                }
+            }
+
+            // Build poll list: [signal, x11, pty0, pty1, ...]
             let signal_borrow = unsafe { BorrowedFd::borrow_raw(signal_fd) };
             let x11_borrow = unsafe { BorrowedFd::borrow_raw(x11_fd) };
 
-            let mut fds = [
-                PollFd::new(signal_borrow, PollFlags::POLLIN),
-                PollFd::new(x11_borrow, PollFlags::POLLIN),
-            ];
+            let mut fds: Vec<PollFd> = Vec::with_capacity(2 + pty_fds.len());
+            fds.push(PollFd::new(signal_borrow, PollFlags::POLLIN));
+            fds.push(PollFd::new(x11_borrow, PollFlags::POLLIN));
+            for &fd in &pty_fds {
+                let borrow = unsafe { BorrowedFd::borrow_raw(fd) };
+                fds.push(PollFd::new(borrow, PollFlags::POLLIN));
+            }
 
-            // Use a short timeout for rendering (~60fps)
-            poll(&mut fds, PollTimeout::from(16u16))?;
+            // In vsync mode, block until something happens (infinite timeout).
+            // In continuous mode, wake every ~16ms to redraw cursor blink, etc.
+            let timeout = if self.vsync {
+                PollTimeout::NONE
+            } else {
+                PollTimeout::from(16u16)
+            };
+
+            poll(&mut fds, timeout)?;
 
             let signal_ready = fds[0].revents().is_some_and(|r| r.contains(PollFlags::POLLIN));
             let x11_ready = fds[1].revents().is_some_and(|r| r.contains(PollFlags::POLLIN));
+            // pty_ready is implicit: we just always try to read non-blockingly below
 
             let _ = fds;
 
