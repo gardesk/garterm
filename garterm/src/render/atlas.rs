@@ -49,7 +49,9 @@ impl GlyphAtlas {
             cursor_y: 1,
             row_height: 0,
             cache: HashMap::new(),
-            dirty: true, // Mark dirty so initial zeros get uploaded to GPU
+            // Atlas starts empty — no point uploading a megabyte of zeros.
+            // The first inserted glyph sets dirty=true.
+            dirty: false,
         }
     }
 

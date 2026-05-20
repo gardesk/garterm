@@ -148,8 +148,21 @@ impl Renderer {
         colors: ColorPalette,
         renderer_config: &crate::config::Renderer,
     ) -> Result<Self, GpuError> {
+        // Run font loading in parallel with GPU init. Font loading is sync
+        // (fc-match subprocesses + file I/O); GPU init is async. Overlapping
+        // them shaves roughly the duration of the shorter of the two off
+        // startup time.
+        let font_family_owned = font_family.to_string();
+        let font_thread = std::thread::Builder::new()
+            .name("garterm-font-load".into())
+            .spawn(move || {
+                FontCache::new(&font_family_owned, font_size)
+                    .expect("Failed to load fonts")
+            })
+            .expect("failed to spawn font-load thread");
+
         let gpu = GpuContext::new(window, width, height, renderer_config).await?;
-        let fonts = FontCache::new(font_family, font_size).expect("Failed to load fonts");
+        let fonts = font_thread.join().expect("font-load thread panicked");
 
         // Create glyph atlas
         let atlas = GlyphAtlas::new(1024, 1024);
@@ -277,7 +290,7 @@ impl Renderer {
 
         let palette = colors.to_render_palette();
 
-        Ok(Self {
+        let mut renderer = Self {
             gpu,
             fonts,
             atlas,
@@ -290,7 +303,30 @@ impl Renderer {
             indices: Vec::new(),
             colors,
             palette,
-        })
+        };
+
+        // Pre-populate the atlas with printable ASCII in each style. This avoids
+        // rasterizing 95 glyphs lazily during the first frame's hot loop, and
+        // packs them in row order so the first atlas upload is tight.
+        renderer.prewarm_ascii();
+
+        Ok(renderer)
+    }
+
+    /// Insert printable ASCII (0x20–0x7E) for each font style so the first
+    /// render frame finds them in the cache.
+    fn prewarm_ascii(&mut self) {
+        let styles = [
+            FontStyle::Regular,
+            FontStyle::Bold,
+            FontStyle::Italic,
+            FontStyle::BoldItalic,
+        ];
+        for style in styles {
+            for c in 0x20u8..=0x7E {
+                self.atlas.get_or_insert(GlyphKey { c: c as char, style }, &self.fonts);
+            }
+        }
     }
 
     /// Get cell dimensions
@@ -401,11 +437,11 @@ impl Renderer {
         self.gpu.queue.submit(std::iter::once(encoder.finish()));
         output.present();
 
-        // Poll device to ensure GPU work is complete
-        self.gpu.device.poll(wgpu::Maintain::Wait);
-
-        // Sync with X11 server to ensure the frame is displayed
-        self.gpu.sync_display();
+        // Don't block on the GPU finishing — wgpu's present mode (Fifo/Mailbox)
+        // handles synchronization, and stalling the main thread on every frame
+        // both kills latency and prevents pipeline overlap with the next frame.
+        // Don't XSync either: present() already drains pending requests for the
+        // surface, and the per-frame round-trip was significant.
 
         Ok(())
     }
@@ -532,8 +568,7 @@ impl Renderer {
         self.gpu.queue.submit(std::iter::once(encoder.finish()));
         output.present();
 
-        self.gpu.device.poll(wgpu::Maintain::Wait);
-        self.gpu.sync_display();
+        // No blocking device.poll(Wait) or XSync — see render() for rationale.
 
         Ok(())
     }
@@ -797,8 +832,7 @@ impl Renderer {
         self.gpu.queue.submit(std::iter::once(encoder.finish()));
         output.present();
 
-        self.gpu.device.poll(wgpu::Maintain::Wait);
-        self.gpu.sync_display();
+        // No blocking device.poll(Wait) or XSync — see render() for rationale.
 
         Ok(())
     }
