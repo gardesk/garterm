@@ -843,11 +843,12 @@ impl Renderer {
         let to_ndc_x = |px: f32| (px / surface_w as f32) * 2.0 - 1.0;
         let to_ndc_y = |py: f32| 1.0 - (py / surface_h as f32) * 2.0;
 
-        let border_width = 1.0;
-        let color = if focused {
-            [0.4, 0.6, 1.0, 1.0] // Blue-ish for focused
+        // Focused pane gets a thicker, brighter border so it's recognisable
+        // at a glance even before the dim on inactive panes registers.
+        let (border_width, color) = if focused {
+            (2.0, [0.4, 0.7, 1.0, 1.0]) // Bright blue, 2px
         } else {
-            [0.3, 0.3, 0.3, 1.0] // Gray for unfocused
+            (1.0, [0.25, 0.25, 0.3, 1.0]) // Subtle dark gray
         };
 
         let x = x as f32;
@@ -898,8 +899,11 @@ impl Renderer {
         let to_ndc_x = |px: f32| (px / surface_w as f32) * 2.0 - 1.0;
         let to_ndc_y = |py: f32| 1.0 - (py / surface_h as f32) * 2.0;
 
-        // Semi-transparent black overlay to dim the pane
-        let dim_color = [0.0, 0.0, 0.0, 0.35];
+        // Semi-transparent black overlay to dim the pane. At 0.55 alpha the
+        // inactive pane is rendered at ~45% of its original brightness, which
+        // reads as clearly inactive on both light and dark themes without
+        // making the text unreadable.
+        let dim_color = [0.0, 0.0, 0.0, 0.55];
 
         self.add_quad(
             to_ndc_x(x as f32), to_ndc_y(y as f32),
