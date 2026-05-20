@@ -205,7 +205,12 @@ impl SplitNode {
             return None;
         }
 
-        // Find the one with the most overlap on the perpendicular axis
+        // Pick the one with the most overlap on the perpendicular axis, and
+        // on ties, the closest in the direction of travel. Without the
+        // distance tie-break, multiple candidates with equal perpendicular
+        // overlap (the common case for stacks of panes) all match equally and
+        // max_by_key returns the last one in iteration order — which makes
+        // Alt+Right from the leftmost pane in [A|B|C] skip past B to C.
         let best = candidates
             .into_iter()
             .max_by_key(|l| {
@@ -221,7 +226,13 @@ impl SplitNode {
                         end.saturating_sub(start)
                     }
                 };
-                overlap
+                let distance = match direction {
+                    Direction::Up => from_layout.y.saturating_sub(l.y + l.height),
+                    Direction::Down => l.y.saturating_sub(from_layout.y + from_layout.height),
+                    Direction::Left => from_layout.x.saturating_sub(l.x + l.width),
+                    Direction::Right => l.x.saturating_sub(from_layout.x + from_layout.width),
+                };
+                (overlap, std::cmp::Reverse(distance))
             })?;
 
         Some(best.id)
@@ -318,5 +329,59 @@ mod tests {
 
         // Tree should now be a single leaf
         assert!(matches!(tree, SplitNode::Leaf(PaneId(1))));
+    }
+
+    /// Three panes stacked left-to-right: Alt+Right from A should land on B,
+    /// not skip to C. Regression for the tie-break-by-distance fix.
+    #[test]
+    fn test_find_neighbor_three_horizontal_picks_immediate() {
+        // Hand-build layouts [A=0..30, B=30..60, C=60..90], full height
+        let layouts = vec![
+            PaneLayout { id: PaneId(1), x: 0,  y: 0, width: 30, height: 50 },
+            PaneLayout { id: PaneId(2), x: 30, y: 0, width: 30, height: 50 },
+            PaneLayout { id: PaneId(3), x: 60, y: 0, width: 30, height: 50 },
+        ];
+        // The actual tree shape doesn't matter for find_neighbor — only layouts do.
+        let tree = SplitNode::leaf(PaneId(1));
+
+        assert_eq!(
+            tree.find_neighbor(PaneId(1), Direction::Right, &layouts),
+            Some(PaneId(2)),
+            "Alt+Right from leftmost should land on middle, not rightmost",
+        );
+        assert_eq!(
+            tree.find_neighbor(PaneId(3), Direction::Left, &layouts),
+            Some(PaneId(2)),
+            "Alt+Left from rightmost should land on middle",
+        );
+        assert_eq!(
+            tree.find_neighbor(PaneId(2), Direction::Right, &layouts),
+            Some(PaneId(3)),
+        );
+        assert_eq!(
+            tree.find_neighbor(PaneId(2), Direction::Left, &layouts),
+            Some(PaneId(1)),
+        );
+    }
+
+    /// Three panes stacked top-to-bottom: Alt+Down from top should land
+    /// on middle, not skip to bottom.
+    #[test]
+    fn test_find_neighbor_three_vertical_picks_immediate() {
+        let layouts = vec![
+            PaneLayout { id: PaneId(1), x: 0, y: 0,  width: 50, height: 30 },
+            PaneLayout { id: PaneId(2), x: 0, y: 30, width: 50, height: 30 },
+            PaneLayout { id: PaneId(3), x: 0, y: 60, width: 50, height: 30 },
+        ];
+        let tree = SplitNode::leaf(PaneId(1));
+
+        assert_eq!(
+            tree.find_neighbor(PaneId(1), Direction::Down, &layouts),
+            Some(PaneId(2)),
+        );
+        assert_eq!(
+            tree.find_neighbor(PaneId(3), Direction::Up, &layouts),
+            Some(PaneId(2)),
+        );
     }
 }
