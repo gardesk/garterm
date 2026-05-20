@@ -80,6 +80,48 @@ pub struct SearchRenderInfo<'a> {
     pub case_insensitive: bool,
 }
 
+/// Which edges of a pane are shared with another pane (and therefore need a border).
+#[derive(Debug, Clone, Copy, Default)]
+struct PaneEdges {
+    top: bool,
+    bottom: bool,
+    left: bool,
+    right: bool,
+}
+
+/// Compute which of a pane's four edges are shared with another pane in the
+/// same tab. An edge is "internal" if some other pane is flush against it
+/// along that side and the two panes overlap on the perpendicular axis.
+fn internal_edges(pane: &PaneRenderInfo<'_>, panes: &[PaneRenderInfo<'_>]) -> PaneEdges {
+    let mut edges = PaneEdges::default();
+    let px0 = pane.x;
+    let py0 = pane.y;
+    let px1 = pane.x + pane.width;
+    let py1 = pane.y + pane.height;
+
+    let overlap_x = |a0: u32, a1: u32| a0 < px1 && a1 > px0;
+    let overlap_y = |a0: u32, a1: u32| a0 < py1 && a1 > py0;
+
+    for other in panes {
+        // Skip self — identify by position since PaneRenderInfo has no ID.
+        if other.x == pane.x && other.y == pane.y
+            && other.width == pane.width && other.height == pane.height
+        {
+            continue;
+        }
+        let ox0 = other.x;
+        let oy0 = other.y;
+        let ox1 = other.x + other.width;
+        let oy1 = other.y + other.height;
+
+        if ox1 == px0 && overlap_y(oy0, oy1) { edges.left = true; }
+        if ox0 == px1 && overlap_y(oy0, oy1) { edges.right = true; }
+        if oy1 == py0 && overlap_x(ox0, ox1) { edges.top = true; }
+        if oy0 == py1 && overlap_x(ox0, ox1) { edges.bottom = true; }
+    }
+    edges
+}
+
 /// Search overlay for the search bar at the bottom of the screen
 pub struct SearchOverlay<'a> {
     /// Current search query
@@ -504,10 +546,6 @@ impl Renderer {
                 pane.selection.as_ref(),
             );
 
-            if panes.len() > 1 {
-                self.add_pane_border(pane.x, pane.y, pane.width, pane.height, pane.focused);
-            }
-
             // Dim inactive panes with a semi-transparent overlay
             if !pane.focused && panes.len() > 1 {
                 self.add_dim_overlay(pane.x, pane.y, pane.width, pane.height);
@@ -517,6 +555,23 @@ impl Renderer {
                 "Pane {} at ({}, {}) size {}x{} focused={}",
                 i, pane.x, pane.y, pane.width, pane.height, pane.focused
             );
+        }
+
+        // Border lives on the focused pane only, and only on the edges shared
+        // with another pane — drawing along terminal edges fights with the
+        // window's rounded corners. The dim above is what tells you which
+        // unfocused panes are unfocused; the border tells you which is active.
+        if panes.len() > 1 {
+            if let Some(focused) = panes.iter().find(|p| p.focused) {
+                let edges = internal_edges(focused, panes);
+                self.add_pane_border_edges(
+                    focused.x,
+                    focused.y,
+                    focused.width,
+                    focused.height,
+                    edges,
+                );
+            }
         }
 
         // Build search overlay if active
@@ -838,6 +893,60 @@ impl Renderer {
     }
 
     /// Add a border around a pane
+    /// Draw a border only on the specified edges of a pane. Used to outline
+    /// the focused pane along its shared edges with sibling panes, without
+    /// drawing on the outer terminal edges (which would clip against the
+    /// window's rounded corners).
+    fn add_pane_border_edges(
+        &mut self,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        edges: PaneEdges,
+    ) {
+        let (surface_w, surface_h) = self.gpu.size();
+        let to_ndc_x = |px: f32| (px / surface_w as f32) * 2.0 - 1.0;
+        let to_ndc_y = |py: f32| 1.0 - (py / surface_h as f32) * 2.0;
+
+        let border_width = 2.0;
+        let color = [0.4, 0.7, 1.0, 1.0]; // Bright blue for focused pane
+
+        let x = x as f32;
+        let y = y as f32;
+        let w = width as f32;
+        let h = height as f32;
+
+        if edges.top {
+            self.add_quad(
+                to_ndc_x(x), to_ndc_y(y),
+                to_ndc_x(x + w), to_ndc_y(y + border_width),
+                0.0, 0.0, 0.0, 0.0, color, 0.0,
+            );
+        }
+        if edges.bottom {
+            self.add_quad(
+                to_ndc_x(x), to_ndc_y(y + h - border_width),
+                to_ndc_x(x + w), to_ndc_y(y + h),
+                0.0, 0.0, 0.0, 0.0, color, 0.0,
+            );
+        }
+        if edges.left {
+            self.add_quad(
+                to_ndc_x(x), to_ndc_y(y),
+                to_ndc_x(x + border_width), to_ndc_y(y + h),
+                0.0, 0.0, 0.0, 0.0, color, 0.0,
+            );
+        }
+        if edges.right {
+            self.add_quad(
+                to_ndc_x(x + w - border_width), to_ndc_y(y),
+                to_ndc_x(x + w), to_ndc_y(y + h),
+                0.0, 0.0, 0.0, 0.0, color, 0.0,
+            );
+        }
+    }
+
     fn add_pane_border(&mut self, x: u32, y: u32, width: u32, height: u32, focused: bool) {
         let (surface_w, surface_h) = self.gpu.size();
         let to_ndc_x = |px: f32| (px / surface_w as f32) * 2.0 - 1.0;
