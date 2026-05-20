@@ -1,8 +1,8 @@
 use fontdue::{Font, FontSettings};
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread::{self, JoinHandle};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -22,15 +22,51 @@ pub enum FontStyle {
     BoldItalic,
 }
 
+/// Lazily-loaded fallback fonts. Loading scans many paths and runs several
+/// `fc-match` subprocesses (~150ms+), so we kick this off on a background
+/// thread during startup. The first glyph that misses the primary font will
+/// block on this if it hasn't finished yet — usually it has.
+struct FallbackLoader {
+    handle: Mutex<Option<JoinHandle<Vec<Arc<Font>>>>>,
+    cache: OnceLock<Vec<Arc<Font>>>,
+}
+
+impl FallbackLoader {
+    fn spawn() -> Arc<Self> {
+        let handle = thread::Builder::new()
+            .name("garterm-fallback-fonts".into())
+            .spawn(load_fallback_fonts_impl)
+            .ok();
+        Arc::new(Self {
+            handle: Mutex::new(handle),
+            cache: OnceLock::new(),
+        })
+    }
+
+    /// Get fallback fonts, joining the loader thread if not yet finished.
+    fn get(&self) -> &[Arc<Font>] {
+        if let Some(cached) = self.cache.get() {
+            return cached;
+        }
+        let handle = self.handle.lock().unwrap().take();
+        let fonts = handle
+            .and_then(|h| h.join().ok())
+            .unwrap_or_default();
+        // It's fine if another thread won the race — both produced the same data.
+        let _ = self.cache.set(fonts);
+        self.cache.get().map(|v| v.as_slice()).unwrap_or(&[])
+    }
+}
+
 /// Font cache for terminal rendering
 pub struct FontCache {
     fonts: HashMap<FontStyle, Arc<Font>>,
-    /// Fallback fonts for missing glyphs (symbols, icons, etc.)
-    fallback_fonts: Vec<Arc<Font>>,
+    /// Fallback fonts for missing glyphs (symbols, icons, etc.) — lazily loaded.
+    fallback_loader: Arc<FallbackLoader>,
     /// Fonts discovered dynamically via fontconfig charset queries
-    dynamic_fallbacks: RefCell<Vec<Arc<Font>>>,
+    dynamic_fallbacks: Mutex<Vec<Arc<Font>>>,
     /// Codepoints we've already attempted fontconfig discovery for
-    tried_codepoints: RefCell<HashSet<char>>,
+    tried_codepoints: Mutex<HashSet<char>>,
     size: f32,
     cell_width: f32,
     cell_height: f32,
@@ -61,73 +97,57 @@ impl FontCache {
 
     /// Load fonts from system or embedded fallback
     pub fn new(family: &str, size: f32) -> Result<Self, FontError> {
-        // Build font paths: try fontconfig first, then hardcoded fallbacks
-        let mut regular_paths: Vec<String> = Vec::new();
-        let mut bold_paths: Vec<String> = Vec::new();
-        let mut italic_paths: Vec<String> = Vec::new();
-        let mut bold_italic_paths: Vec<String> = Vec::new();
+        // Kick off fallback font loading on a background thread. These fonts are
+        // only consulted when the primary font is missing a glyph, so the main
+        // thread doesn't need to wait for them.
+        let fallback_loader = FallbackLoader::spawn();
 
-        // Resolve via fontconfig
-        if let Some(p) = Self::fc_match(family, "Regular") {
-            tracing::debug!("fc-match {family}:Regular -> {p}");
-            regular_paths.push(p);
-        }
-        if let Some(p) = Self::fc_match(family, "Bold") {
-            bold_paths.push(p);
-        }
-        if let Some(p) = Self::fc_match(family, "Italic") {
-            italic_paths.push(p);
-        }
-        if let Some(p) = Self::fc_match(family, "Bold Italic") {
-            bold_italic_paths.push(p);
-        }
-
-        // Hardcoded fallbacks
-        let regular_fallbacks = [
+        // Hardcoded fallback paths for each style.
+        const REGULAR_FALLBACKS: &[&str] = &[
             "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf",
             "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
             "/usr/share/fonts/google-noto/NotoSansMono-Regular.ttf",
         ];
-        let bold_fallbacks = [
+        const BOLD_FALLBACKS: &[&str] = &[
             "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Bold.ttf",
             "/usr/share/fonts/TTF/DejaVuSansMono-Bold.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
         ];
-        let italic_fallbacks = [
+        const ITALIC_FALLBACKS: &[&str] = &[
             "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Italic.ttf",
             "/usr/share/fonts/TTF/DejaVuSansMono-Oblique.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Oblique.ttf",
         ];
-        let bold_italic_fallbacks = [
+        const BOLD_ITALIC_FALLBACKS: &[&str] = &[
             "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-BoldItalic.ttf",
             "/usr/share/fonts/TTF/DejaVuSansMono-BoldOblique.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-BoldOblique.ttf",
         ];
 
-        regular_paths.extend(regular_fallbacks.iter().map(|s| s.to_string()));
-        bold_paths.extend(bold_fallbacks.iter().map(|s| s.to_string()));
-        italic_paths.extend(italic_fallbacks.iter().map(|s| s.to_string()));
-        bold_italic_paths.extend(bold_italic_fallbacks.iter().map(|s| s.to_string()));
+        // Run the 4 fc-match queries in parallel; each spawns a subprocess
+        // (~10-20ms apiece) and they're independent.
+        let family_owned = family.to_string();
+        let (regular, bold, italic, bold_italic) = thread::scope(|s| {
+            let f = &family_owned;
+            let r = s.spawn(|| Self::resolve_and_load(f, "Regular", REGULAR_FALLBACKS).ok());
+            let b = s.spawn(|| Self::resolve_and_load(f, "Bold", BOLD_FALLBACKS).ok());
+            let i = s.spawn(|| Self::resolve_and_load(f, "Italic", ITALIC_FALLBACKS).ok());
+            let bi = s.spawn(|| Self::resolve_and_load(f, "Bold Italic", BOLD_ITALIC_FALLBACKS).ok());
+            (
+                r.join().ok().flatten(),
+                b.join().ok().flatten(),
+                i.join().ok().flatten(),
+                bi.join().ok().flatten(),
+            )
+        });
 
-        let regular_refs: Vec<&str> = regular_paths.iter().map(|s| s.as_str()).collect();
-        let bold_refs: Vec<&str> = bold_paths.iter().map(|s| s.as_str()).collect();
-        let italic_refs: Vec<&str> = italic_paths.iter().map(|s| s.as_str()).collect();
-        let bold_italic_refs: Vec<&str> = bold_italic_paths.iter().map(|s| s.as_str()).collect();
-
-        let regular = Arc::new(Self::load_font(&regular_refs)?);
-
-        let bold = Arc::new(Self::load_font(&bold_refs)
-            .unwrap_or_else(|_| (*regular).clone()));
-
-        let italic = Arc::new(Self::load_font(&italic_refs)
-            .unwrap_or_else(|_| (*regular).clone()));
-
-        let bold_italic = Arc::new(Self::load_font(&bold_italic_refs)
-            .unwrap_or_else(|_| (*bold).clone()));
-
-        // Load fallback fonts for symbols, icons, box drawing, etc.
-        let fallback_fonts = Self::load_fallback_fonts();
+        let regular = regular.map(Arc::new).ok_or_else(|| {
+            FontError::LoadFailed("No suitable regular font found".into())
+        })?;
+        let bold = bold.map(Arc::new).unwrap_or_else(|| regular.clone());
+        let italic = italic.map(Arc::new).unwrap_or_else(|| regular.clone());
+        let bold_italic = bold_italic.map(Arc::new).unwrap_or_else(|| bold.clone());
 
         // Calculate cell metrics from regular font
         let metrics = regular.metrics('M', size);
@@ -147,9 +167,9 @@ impl FontCache {
 
         Ok(Self {
             fonts,
-            fallback_fonts,
-            dynamic_fallbacks: RefCell::new(Vec::new()),
-            tried_codepoints: RefCell::new(HashSet::new()),
+            fallback_loader,
+            dynamic_fallbacks: Mutex::new(Vec::new()),
+            tried_codepoints: Mutex::new(HashSet::new()),
             size,
             cell_width,
             cell_height,
@@ -157,65 +177,17 @@ impl FontCache {
         })
     }
 
-    /// Load fallback fonts for symbols and missing glyphs
-    fn load_fallback_fonts() -> Vec<Arc<Font>> {
-        let mut fallback_paths: Vec<std::path::PathBuf> = Vec::new();
-
-        // Resolve via fontconfig first (works on NixOS and all distros)
-        let fc_families = [
-            ("Symbols Nerd Font Mono", "Regular"),
-            ("Symbols Nerd Font", "Regular"),
-            ("Noto Sans Symbols2", "Regular"),
-            ("DejaVu Sans", "Book"),
-            ("Noto Sans", "Regular"),
-            ("Noto Emoji", "Regular"),
-        ];
-        for (family, style) in fc_families {
-            if let Some(path) = Self::fc_match(family, style) {
-                fallback_paths.push(std::path::PathBuf::from(path));
-            }
-        }
-
-        // Add user font directories
-        if let Some(home) = dirs::home_dir() {
-            let user_fonts = home.join(".local/share/fonts");
-            fallback_paths.push(user_fonts.join("NerdFontsSymbols/SymbolsNerdFontMono-Regular.ttf"));
-            fallback_paths.push(user_fonts.join("NerdFontsSymbols/SymbolsNerdFont-Regular.ttf"));
-        }
-
-        // Hardcoded system paths as final fallback
-        let system_paths = [
-            "/usr/share/fonts/TTF/SymbolsNerdFont-Regular.ttf",
-            "/usr/share/fonts/TTF/SymbolsNerdFontMono-Regular.ttf",
-            "/usr/share/fonts/google-noto/NotoSansSymbols2-Regular.ttf",
-            "/usr/share/fonts/google-noto-vf/NotoSansSymbols[wght].ttf",
-            "/usr/share/fonts/gdouros-symbola/Symbola.ttf",
-            "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
-            "/usr/share/fonts/TTF/DejaVuSans.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/google-noto/NotoSans-Regular.ttf",
-            "/usr/share/fonts/google-noto-emoji-fonts/NotoEmoji-Regular.ttf",
-            "/usr/share/fonts/google-noto-color-emoji-fonts/NotoColorEmoji.ttf",
-        ];
-        fallback_paths.extend(system_paths.iter().map(std::path::PathBuf::from));
-
-        let mut fallbacks = Vec::new();
-        for path in &fallback_paths {
-            if let Ok(data) = std::fs::read(path) {
+    /// Resolve a font path via fontconfig + hardcoded fallbacks and load it.
+    fn resolve_and_load(family: &str, style: &str, fallbacks: &[&str]) -> Result<Font, FontError> {
+        if let Some(p) = Self::fc_match(family, style) {
+            if let Ok(data) = std::fs::read(&p) {
                 if let Ok(font) = Font::from_bytes(data, FontSettings::default()) {
-                    tracing::debug!("Loaded fallback font: {}", path.display());
-                    fallbacks.push(Arc::new(font));
+                    tracing::debug!("Loaded {}:{} from {}", family, style, p);
+                    return Ok(font);
                 }
             }
         }
-
-        if fallbacks.is_empty() {
-            tracing::warn!("No fallback fonts loaded - some symbols may not render");
-        } else {
-            tracing::info!("Loaded {} fallback fonts", fallbacks.len());
-        }
-
-        fallbacks
+        Self::load_font(fallbacks)
     }
 
     fn load_font(paths: &[&str]) -> Result<Font, FontError> {
@@ -260,9 +232,9 @@ impl FontCache {
 
         Self {
             fonts: self.fonts.clone(),
-            fallback_fonts: self.fallback_fonts.clone(),
-            dynamic_fallbacks: RefCell::new(self.dynamic_fallbacks.borrow().clone()),
-            tried_codepoints: RefCell::new(self.tried_codepoints.borrow().clone()),
+            fallback_loader: self.fallback_loader.clone(),
+            dynamic_fallbacks: Mutex::new(self.dynamic_fallbacks.lock().unwrap().clone()),
+            tried_codepoints: Mutex::new(self.tried_codepoints.lock().unwrap().clone()),
             size: new_size,
             cell_width,
             cell_height,
@@ -288,26 +260,34 @@ impl FontCache {
             return primary_font.rasterize(c, self.size);
         }
 
-        // Try static fallback fonts
-        for fallback in &self.fallback_fonts {
+        // Try static fallback fonts (waits for background loader if first miss)
+        for fallback in self.fallback_loader.get() {
             if fallback.lookup_glyph_index(c) != 0 {
                 return fallback.rasterize(c, self.size);
             }
         }
 
         // Try already-discovered dynamic fallbacks
-        for fallback in self.dynamic_fallbacks.borrow().iter() {
-            if fallback.lookup_glyph_index(c) != 0 {
-                return fallback.rasterize(c, self.size);
+        {
+            let dynamic = self.dynamic_fallbacks.lock().unwrap();
+            for fallback in dynamic.iter() {
+                if fallback.lookup_glyph_index(c) != 0 {
+                    return fallback.rasterize(c, self.size);
+                }
             }
         }
 
-        // Ask fontconfig to find a font for this codepoint (once per codepoint)
-        if !self.tried_codepoints.borrow().contains(&c) {
-            self.tried_codepoints.borrow_mut().insert(c);
+        // Ask fontconfig to find a font for this codepoint (once per codepoint).
+        // We hold the lock briefly to insert into tried_codepoints; the fc-list
+        // subprocess runs without holding any locks.
+        let first_try = {
+            let mut tried = self.tried_codepoints.lock().unwrap();
+            tried.insert(c)
+        };
+        if first_try {
             if let Some(font) = self.discover_font_for_char(c) {
                 let result = font.rasterize(c, self.size);
-                self.dynamic_fallbacks.borrow_mut().push(font);
+                self.dynamic_fallbacks.lock().unwrap().push(font);
                 return result;
             }
         }
@@ -367,9 +347,77 @@ impl FontCache {
         if primary.lookup_glyph_index(c) != 0 {
             return true;
         }
-        if self.fallback_fonts.iter().any(|f| f.lookup_glyph_index(c) != 0) {
+        if self.fallback_loader.get().iter().any(|f| f.lookup_glyph_index(c) != 0) {
             return true;
         }
-        self.dynamic_fallbacks.borrow().iter().any(|f| f.lookup_glyph_index(c) != 0)
+        self.dynamic_fallbacks.lock().unwrap().iter().any(|f: &Arc<Font>| f.lookup_glyph_index(c) != 0)
     }
+}
+
+/// Background-thread function that loads fallback fonts for symbols and missing glyphs.
+fn load_fallback_fonts_impl() -> Vec<Arc<Font>> {
+    let mut fallback_paths: Vec<std::path::PathBuf> = Vec::new();
+
+    // Resolve via fontconfig first (works on NixOS and all distros)
+    let fc_families = [
+        ("Symbols Nerd Font Mono", "Regular"),
+        ("Symbols Nerd Font", "Regular"),
+        ("Noto Sans Symbols2", "Regular"),
+        ("DejaVu Sans", "Book"),
+        ("Noto Sans", "Regular"),
+        ("Noto Emoji", "Regular"),
+    ];
+
+    // Run fc-match queries in parallel — each is a subprocess (~10-20ms).
+    let resolved: Vec<Option<String>> = thread::scope(|s| {
+        let handles: Vec<_> = fc_families
+            .iter()
+            .map(|(family, style)| s.spawn(move || FontCache::fc_match(family, style)))
+            .collect();
+        handles.into_iter().map(|h| h.join().ok().flatten()).collect()
+    });
+    for path in resolved.into_iter().flatten() {
+        fallback_paths.push(std::path::PathBuf::from(path));
+    }
+
+    // Add user font directories
+    if let Some(home) = dirs::home_dir() {
+        let user_fonts = home.join(".local/share/fonts");
+        fallback_paths.push(user_fonts.join("NerdFontsSymbols/SymbolsNerdFontMono-Regular.ttf"));
+        fallback_paths.push(user_fonts.join("NerdFontsSymbols/SymbolsNerdFont-Regular.ttf"));
+    }
+
+    // Hardcoded system paths as final fallback
+    let system_paths = [
+        "/usr/share/fonts/TTF/SymbolsNerdFont-Regular.ttf",
+        "/usr/share/fonts/TTF/SymbolsNerdFontMono-Regular.ttf",
+        "/usr/share/fonts/google-noto/NotoSansSymbols2-Regular.ttf",
+        "/usr/share/fonts/google-noto-vf/NotoSansSymbols[wght].ttf",
+        "/usr/share/fonts/gdouros-symbola/Symbola.ttf",
+        "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/google-noto/NotoSans-Regular.ttf",
+        "/usr/share/fonts/google-noto-emoji-fonts/NotoEmoji-Regular.ttf",
+        "/usr/share/fonts/google-noto-color-emoji-fonts/NotoColorEmoji.ttf",
+    ];
+    fallback_paths.extend(system_paths.iter().map(std::path::PathBuf::from));
+
+    let mut fallbacks = Vec::new();
+    for path in &fallback_paths {
+        if let Ok(data) = std::fs::read(path) {
+            if let Ok(font) = Font::from_bytes(data, FontSettings::default()) {
+                tracing::debug!("Loaded fallback font: {}", path.display());
+                fallbacks.push(Arc::new(font));
+            }
+        }
+    }
+
+    if fallbacks.is_empty() {
+        tracing::warn!("No fallback fonts loaded - some symbols may not render");
+    } else {
+        tracing::info!("Loaded {} fallback fonts", fallbacks.len());
+    }
+
+    fallbacks
 }
