@@ -40,8 +40,20 @@ impl Modifiers {
         Self { ctrl: true, alt: true, ..Default::default() }
     }
 
+    pub fn shift_alt() -> Self {
+        Self { shift: true, alt: true, ..Default::default() }
+    }
+
     pub fn ctrl_shift_alt() -> Self {
         Self { ctrl: true, shift: true, alt: true, ..Default::default() }
+    }
+
+    pub fn super_alt() -> Self {
+        Self { super_key: true, alt: true, ..Default::default() }
+    }
+
+    pub fn super_ctrl_alt() -> Self {
+        Self { super_key: true, ctrl: true, alt: true, ..Default::default() }
     }
 }
 
@@ -278,19 +290,34 @@ impl KeybindSet {
         set.add(Keybind::new(Modifiers::ctrl_shift(), "c", Action::Copy));
         set.add(Keybind::new(Modifiers::ctrl_shift(), "v", Action::Paste));
 
-        // Tabs (Alt+key to avoid WM conflicts)
+        // Tabs (Alt+key to avoid WM conflicts). Ctrl backups exist because
+        // a stray Shift on alt+w makes the keystroke {alt,shift}+w, which
+        // wouldn't match the {alt}-only binding and silently does nothing.
         set.add(Keybind::new(Modifiers::alt(), "t", Action::NewTab));
+        set.add(Keybind::new(Modifiers::ctrl_alt(), "t", Action::NewTab));
         set.add(Keybind::new(Modifiers::alt(), "w", Action::ClosePane));
+        set.add(Keybind::new(Modifiers::ctrl_alt(), "w", Action::ClosePane));
+        set.add(Keybind::new(Modifiers::shift_alt(), "w", Action::ClosePane));
+
+        // Tab switching with Super+Alt+Left/Right (gar WM uses Super+Arrows for
+        // window focus, so Super+Alt is the conflict-free combo for tab nav).
+        set.add(Keybind::new(Modifiers::super_alt(), "left", Action::PrevTab));
+        set.add(Keybind::new(Modifiers::super_alt(), "right", Action::NextTab));
 
         // Splits (Alt+key)
         set.add(Keybind::new(Modifiers::alt(), "h", Action::SplitHorizontal));
         set.add(Keybind::new(Modifiers::alt(), "v", Action::SplitVertical));
 
-        // Focus navigation (Alt+Arrow)
+        // Focus navigation (Alt+Arrow, plus Super+Ctrl+Alt+Arrow as a no-conflict
+        // alternative when Alt+Arrow is captured by readline/the active TUI).
         set.add(Keybind::new(Modifiers::alt(), "up", Action::FocusUp));
         set.add(Keybind::new(Modifiers::alt(), "down", Action::FocusDown));
         set.add(Keybind::new(Modifiers::alt(), "left", Action::FocusLeft));
         set.add(Keybind::new(Modifiers::alt(), "right", Action::FocusRight));
+        set.add(Keybind::new(Modifiers::super_ctrl_alt(), "up", Action::FocusUp));
+        set.add(Keybind::new(Modifiers::super_ctrl_alt(), "down", Action::FocusDown));
+        set.add(Keybind::new(Modifiers::super_ctrl_alt(), "left", Action::FocusLeft));
+        set.add(Keybind::new(Modifiers::super_ctrl_alt(), "right", Action::FocusRight));
 
         // Scrollback
         set.add(Keybind::new(Modifiers::shift(), "page_up", Action::ScrollPageUp));
